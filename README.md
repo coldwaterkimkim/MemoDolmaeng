@@ -1,65 +1,59 @@
 # MemoDolmaeng
 
-Stickies-like local macOS memo app.
+![MemoDolmaeng editor rendering](docs/screenshots/memodolmaeng-editor.png)
 
-## MVP 1
+스티키 메모처럼 가볍게 띄워두면서도 Markdown을 그대로 쓰고 볼 수 있도록 만든 로컬 macOS 메모 앱입니다.
 
-- Multiple independent memo windows
-- Raw Markdown `content` is the source of truth
-- Typora-like live Markdown editing through a bundled `WKWebView` + CodeMirror editor; there is no Source/Raw/Preview toggle inside the sticky note
-- The active Markdown block stays directly editable while inactive blocks are visually rendered with headings, inline emphasis, inline code, task checkboxes, lists, quotes, rendered fenced code blocks with language labels, rendered GFM tables, math markers, links, strikethrough, and footnote markers
-- Legacy bundled `WKWebView` preview renderer using `markdown-it`, task lists, footnotes, `markdown-it-texmath`/KaTeX, and DOMPurify is still available as a rendering resource, but the main note surface is the live editor
-- ChatGPT-style Markdown paste keeps raw source intact for headings, nested lists, tables, task lists, strikethrough, fenced code blocks with language tags, math, links, autolinks, blockquotes, horizontal rules, safe HTML, footnotes, and Mermaid-as-code-block
-- The legacy renderer sanitizes rendered HTML and blocks unsafe protocols such as `javascript:`, `data:`, and `vbscript:`
-- Markdown image syntax stays raw in storage and is shown safely in the live editor rather than automatically fetching remote media
-- `Enter` continues raw Markdown bullets/lists at the current level and exits an empty list item back to body text
-- `Tab` indents raw Markdown list items with a Markdown sublist indent; ordered sublists restart at `1.` and `Shift+Tab` outdents them
-- Rich clipboard paste prefers semantic HTML-to-Markdown import for headings, lists, task lists, tables, code fences, quotes, links, images, emphasis, and strikethrough, then falls back to plain text when HTML is unavailable
-- Paste strips external font, size, CSS class, and theme styling while preserving selected semantic inline text colors as safe raw Markdown `<span style="color: #rrggbb">...</span>` fragments
-- Rich paste drops clipboard UI artifacts such as copy buttons, SVG icons, hidden labels, and design-tool metadata before Markdown conversion
-- Paired text input for `[]`, `''`, `""`, and `<>` is owned by the live editor and normalized against BetterTouchTool-style duplicate events, so opener/caret drift does not leave `[[`, `'''`, `"""`, or `<<`-style artifacts
-- Direct image paste is no longer the primary path in this editor pass; ChatGPT-style image Markdown is preserved as source
-- Compact typography: D2CodingLigature Nerd Font `12pt` body text, fill-matched caret, outside-like text stroke rendering, scaled Markdown headings, tight line spacing, and 10 px vertical text padding
-- Preferences panel for text color, stroke color/weight, font sizes, paragraph spacing, indents, note width/height, padding, drag strip height, paper-only translucent alpha, window edge stroke, and shadow
-- `Format` menu routes to the live Markdown editor and inserts raw Markdown markers for Body, headings, list blocks, quote, checkbox, code block, divider, bold, italic, inline code, and links
-- Format shortcuts: `Cmd+Option+0/1/2/3` for Body/Heading 1/Heading 2/Heading 3, `Cmd+Shift+8` for bullets, `Cmd+Shift+7` for numbered lists, `Cmd+Option+Q` for quote, `Cmd+Option+C` for checkbox, `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+E` for inline code, and `Cmd+K` for links
-- Local app-managed persistence
-- Window size and position restoration
-- Dragging the note body moves the window only when the editor is not focused; while the caret is visible, body dragging remains text selection/editing and the top strip remains the move handle
-- New blank notes start as a compact one-line `300 x 48` note by default, then grow vertically with content
-- Automatic height stops after a manual window resize, so user-sized notes stay user-sized
-- Autosave on edit, move, and resize
-- The top drag strip has a bottom stroke that follows the window stroke settings, making the draggable area easier to read
-- Double-clicking the top drag strip resets the memo width to the default width while preserving the current height
-- If a note that has contained content becomes empty, the top-strip bottom stroke becomes a 2-second countdown line; typing again cancels it, otherwise the note window closes and the note is deleted
-- Borderless sticky-note window shape without macOS traffic-light controls
-- Black paper is the default new-note color, with older saved notes preserving their own colors
-- Color menu for Black, Yellow, Blue, Green, Pink, Purple, Gray, and White
-- New notes always use Black unless the user explicitly changes a note through the Color menu
-- Window menu `Float on Top` option, off by default, with `Cmd+Option+F`
-- Window menu `Translucent` option, off by default, with `Cmd+Option+T`; translucency affects the paper surface, not text or rich content
-- Clicking or dragging one memo window brings only that window forward; `Float on Top` windows do not pull normal windows to the front
-- Window menu `Bring All to Front` is the explicit action for raising all visible memo windows together, with `Cmd+Shift+S`
-- Standard text shortcuts through the macOS responder chain without stealing `Cmd+Option` format shortcuts
-- `Cmd+W` closes empty notes immediately and asks before closing notes with content
+## 만든 이유
 
-## Fixture
+macOS 기본 스티키 메모는 가볍지만 Markdown 문서나 코드 조각을 정리하기에는 부족합니다. 반대로 본격적인 Markdown 에디터는 메모 하나를 잠깐 띄워두고 쓰기에는 무겁습니다.
 
-`Fixtures/chatgpt-markdown-compatibility.md` verifies raw Markdown preservation and live editor rendering.
-`Fixtures/chatgpt-rich-clipboard.html` verifies semantic HTML clipboard import into raw Markdown.
-`Fixtures/editor-render-qa.html` verifies the live editor rendering surface for lists, task checkboxes, quotes, GFM tables, and fenced code blocks.
+MemoDolmaeng은 화면 위에 작은 메모를 여러 개 띄워두되, 그 안에서는 Markdown을 자연스럽게 작성하고 보정된 렌더링으로 읽을 수 있게 하려고 만들었습니다.
 
-## Run
+## 해결 방식
+
+각 메모 창을 독립적인 로컬 윈도우로 만들고, 본문은 raw Markdown을 원본으로 저장합니다. 작성 화면은 `WKWebView` 안의 CodeMirror 기반 에디터로 구성해, 입력 중에는 Markdown 문법을 유지하고 비활성 블록은 읽기 좋게 렌더링되도록 했습니다.
+
+## 구현한 것
+
+- 여러 개의 독립 메모 창
+- raw Markdown 기반 저장
+- CodeMirror 기반 live Markdown editor
+- 제목, 목록, 체크박스, 인용문, 코드블록, 표, 링크, 취소선 렌더링
+- ChatGPT 스타일 Markdown/HTML 붙여넣기 보정
+- 창 위치, 크기, 색상, 투명도, 항상 위 설정 저장
+- 빈 메모 자동 삭제 카운트다운
+- 메뉴와 단축키 기반 서식 삽입
+- 로컬 앱 관리 저장 구조
+
+## 기술 구성
+
+- Swift Package Manager
+- AppKit
+- WKWebView
+- CodeMirror
+- markdown-it / DOMPurify 기반 legacy renderer
+- esbuild 기반 에디터 번들 생성
+
+## 실행 방법
 
 ```bash
 ./script/build_and_run.sh
 ```
 
-Codex also has a project-local Run action wired to the same script.
-The run script rebuilds the bundled CodeMirror editor before compiling Swift.
-
-## Verify
+에디터 번들까지 함께 검증하려면 다음 명령을 사용합니다.
 
 ```bash
 ./script/build_and_run.sh --verify
 ```
+
+웹 에디터 단위 테스트:
+
+```bash
+npm install
+npm run test:editor
+```
+
+## 현재 범위
+
+MemoDolmaeng은 클라우드 동기화나 협업 기능보다, 로컬에서 빠르게 띄워두는 Markdown 메모 경험에 집중한 macOS 앱입니다. 스크린샷은 실제 메모 창 캡처 대신 에디터 렌더링 fixture 화면을 사용했습니다. README에서 Markdown 처리 능력을 보여주는 목적입니다.
