@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="Vendor/katex.min.css">
+  <link rel="stylesheet" href="renderer.css">
+</head>
+<body>
+  <main id="content"></main>
+
+  <script src="Vendor/markdown-it.min.js"></script>
+  <script src="Vendor/markdown-it-task-lists.min.js"></script>
+  <script src="Vendor/markdown-it-footnote.min.js"></script>
+  <script src="Vendor/katex.min.js"></script>
+  <script src="Vendor/texmath.js"></script>
+  <script>
+    window.texmath = window.texmath || (typeof texmath !== "undefined" ? texmath : undefined);
+    if (window.texmath) {
+      window.texmath.katex = window.katex;
+    }
+  </script>
+  <script src="Vendor/purify.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

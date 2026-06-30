@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="../Sources/MemoDolmaeng/Resources/MarkdownEditor/editor.css">
+  <style>
+    html,
+    body {
+      background: #000;
+    }
+
+    body {
+      width: 720px;
+      height: 760px;
+    }
+  </style>
+  <title>MemoDolmaeng Editor Render QA</title>
+</head>
+<body>
+  <main id="editor"></main>
+  <script>
+    window.memoInitialMarkdown = [
+      "# Render QA",
+      "",
+      "- 리스트는 본문보다 살짝 안쪽",
+      "  - 중첩 리스트도 유지",
+      "- [ ] 체크박스도 같은 계열로 구분",
+      "",
+      "> quote는 본문과 구분되는 얕은 들여쓰기와 왼쪽 선이 있어야 함.",
+      "",
+      "| 원인 | 사용자 짜증 | 해법 |",
+      "| :--- | :---: | ---: |",
+      "| 선택 과다 | 후보를 골라야 함 | 편성 |",
+      "| 실패 회피 | 고른 뒤 후회 | 지금 방송 |",
+      "",
+      "```text",
+      "넷플릭스 켜고 20분째 고르는 중이라면",
+      "이제 영화는 고르지 말고 틀어지는 걸 보자",
+      "```",
+      "",
+      "일반 본문은 다시 왼쪽 기준으로 돌아와야 함."
+    ].join("\n");
+  </script>
+  <script src="../Sources/MemoDolmaeng/Resources/MarkdownEditor/editor.bundle.js"></script>
+</body>
+</html>

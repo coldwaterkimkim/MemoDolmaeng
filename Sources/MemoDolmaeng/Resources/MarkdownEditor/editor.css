@@ -1,0 +1,328 @@
+:root {
+  color-scheme: dark;
+  --memo-text-color: #ffffff;
+  --memo-muted-color: rgba(255, 255, 255, 0.48);
+  --memo-faint-color: rgba(255, 255, 255, 0.22);
+  --memo-code-bg: rgba(255, 255, 255, 0.09);
+  --memo-code-border: rgba(255, 255, 255, 0.14);
+  --memo-quote-border: rgba(255, 255, 255, 0.32);
+  --memo-selection-color: rgba(61, 135, 255, 0.46);
+  --memo-text-stroke-color: #000000;
+  --memo-text-stroke-width: 0.3px;
+  --memo-body-font-size: 12px;
+  --memo-heading1-font-size: 19px;
+  --memo-heading2-font-size: 16.5px;
+  --memo-heading3-font-size: 14px;
+  --memo-code-font-size: 12px;
+  --memo-padding-x: 12px;
+  --memo-padding-top: 22px;
+  --memo-padding-bottom: 10px;
+  --memo-block-indent: 8px;
+  --memo-list-indent: 15px;
+  --memo-quote-indent: 10px;
+}
+
+html,
+body,
+#editor {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--memo-text-color);
+  font-family: "D2CodingLigature Nerd Font", "D2CodingLigatureNF", "D2CodingLigature Nerd Font Mono", "D2CodingLigatureNFM", "Apple SD Gothic Neo", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.cm-editor {
+  height: 100%;
+  background: transparent;
+  color: var(--memo-text-color);
+  font-family: inherit;
+  font-size: var(--memo-body-font-size);
+  line-height: 1.34;
+  outline: none;
+}
+
+.cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+}
+
+.cm-content {
+  min-height: calc(100% - var(--memo-padding-top) - var(--memo-padding-bottom));
+  padding: var(--memo-padding-top) var(--memo-padding-x) var(--memo-padding-bottom);
+  caret-color: var(--memo-text-color) !important;
+  -webkit-text-stroke: var(--memo-text-stroke-width) var(--memo-text-stroke-color);
+  paint-order: stroke fill;
+}
+
+.cm-line {
+  padding: 0;
+}
+
+.cm-editor .cm-cursorLayer {
+  z-index: 40;
+  pointer-events: none;
+}
+
+.cm-editor .cm-cursor {
+  border-left: 2px solid var(--memo-text-color) !important;
+  box-sizing: border-box;
+  margin-left: -0.5px;
+  visibility: hidden;
+}
+
+.cm-editor.cm-focused .cm-cursor {
+  visibility: visible !important;
+  animation: memo-caret-blink 1.05s steps(1) infinite;
+}
+
+.cm-selectionBackground,
+.cm-focused .cm-selectionBackground {
+  background: var(--memo-selection-color);
+}
+
+@keyframes memo-caret-blink {
+  0%, 55% {
+    opacity: 1;
+  }
+  56%, 100% {
+    opacity: 0;
+  }
+}
+
+.cm-gutters {
+  display: none;
+}
+
+.memo-md-hidden-marker {
+  color: transparent;
+  font-size: 0;
+  letter-spacing: 0;
+}
+
+.memo-md-muted-marker {
+  color: var(--memo-muted-color);
+}
+
+.memo-md-heading {
+  font-weight: 700;
+  line-height: 1.24;
+}
+
+.memo-md-heading-1 {
+  font-size: var(--memo-heading1-font-size);
+  padding-top: 2px;
+  padding-bottom: 3px;
+}
+
+.memo-md-heading-2 {
+  font-size: var(--memo-heading2-font-size);
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.memo-md-heading-3,
+.memo-md-heading-4,
+.memo-md-heading-5,
+.memo-md-heading-6 {
+  font-size: var(--memo-heading3-font-size);
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+.memo-md-strong {
+  font-weight: 700;
+}
+
+.memo-md-emphasis {
+  font-style: italic;
+}
+
+.memo-md-strike {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.memo-md-inline-code {
+  background: var(--memo-code-bg);
+  border-radius: 3px;
+  font-family: "D2CodingLigature Nerd Font Mono", "D2CodingLigatureNFM", "D2CodingLigature Nerd Font", monospace;
+  font-size: var(--memo-code-font-size);
+  padding: 0 3px;
+}
+
+.memo-md-code-line {
+  background: var(--memo-code-bg);
+  font-family: "D2CodingLigature Nerd Font Mono", "D2CodingLigatureNFM", "D2CodingLigature Nerd Font", monospace;
+  font-size: var(--memo-code-font-size);
+  line-height: 1.45;
+}
+
+.memo-md-code-line.cm-line {
+  padding-left: calc(var(--memo-block-indent) + 7px);
+  padding-right: 7px;
+}
+
+.memo-md-code-start {
+  border-top-left-radius: 5px;
+  border-top-right-radius: 5px;
+  border-top: 1px solid var(--memo-code-border);
+}
+
+.memo-md-code-end {
+  border-bottom-left-radius: 5px;
+  border-bottom-right-radius: 5px;
+  border-bottom: 1px solid var(--memo-code-border);
+  margin-bottom: 3px;
+}
+
+.memo-md-code-language {
+  color: var(--memo-muted-color);
+  font-size: 10px;
+  letter-spacing: 0;
+  margin-left: 4px;
+}
+
+.memo-md-quote {
+  border-left: 2px solid var(--memo-quote-border);
+  margin-left: var(--memo-block-indent);
+  padding-left: var(--memo-quote-indent);
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.memo-md-list {
+  padding-left: calc(var(--memo-block-indent) + 2px);
+}
+
+.memo-md-task-widget {
+  display: inline-flex;
+  width: 1.25em;
+  color: var(--memo-text-color);
+  opacity: 0.86;
+}
+
+.memo-md-hr {
+  color: transparent;
+  border-top: 1px solid var(--memo-faint-color);
+  height: 0;
+  margin: 0.6em 0 0.35em;
+}
+
+.memo-md-link {
+  color: #9ac7ff;
+  text-decoration: underline;
+  text-decoration-color: rgba(154, 199, 255, 0.62);
+}
+
+.memo-md-table {
+  font-family: "D2CodingLigature Nerd Font Mono", "D2CodingLigatureNFM", "D2CodingLigature Nerd Font", monospace;
+  font-size: var(--memo-code-font-size);
+  color: rgba(255, 255, 255, 0.9);
+  padding-left: var(--memo-block-indent);
+}
+
+.memo-md-math {
+  color: #ffe49a;
+}
+
+.memo-md-footnote {
+  color: #b7ddff;
+}
+
+.memo-md-color-text {
+  font-weight: 600;
+}
+
+.memo-md-rendered-block {
+  box-sizing: border-box;
+  margin: 0.42em 0 0.5em var(--memo-block-indent);
+  max-width: calc(100% - var(--memo-block-indent));
+  -webkit-text-stroke: 0;
+  paint-order: normal;
+}
+
+.memo-md-rendered-code {
+  background: var(--memo-code-bg);
+  border: 1px solid var(--memo-code-border);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: "D2CodingLigature Nerd Font Mono", "D2CodingLigatureNFM", "D2CodingLigature Nerd Font", monospace;
+  font-size: var(--memo-code-font-size);
+  overflow: hidden;
+}
+
+.memo-md-rendered-code-label {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--memo-muted-color);
+  font-size: 10px;
+  line-height: 1.3;
+  padding: 4px 8px 3px;
+}
+
+.memo-md-rendered-code pre {
+  box-sizing: border-box;
+  margin: 0;
+  overflow-x: auto;
+  padding: 7px 8px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memo-md-rendered-code code {
+  display: block;
+  line-height: 1.48;
+}
+
+.memo-md-table-widget {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.memo-md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.memo-md-table-widget table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: var(--memo-code-font-size);
+  line-height: 1.35;
+  min-width: min(100%, 220px);
+  width: auto;
+}
+
+.memo-md-table-widget th,
+.memo-md-table-widget td {
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  padding: 5px 7px;
+  vertical-align: top;
+}
+
+.memo-md-table-widget th {
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 700;
+}
+
+.memo-md-table-widget td {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.memo-md-table-align-left {
+  text-align: left;
+}
+
+.memo-md-table-align-center {
+  text-align: center;
+}
+
+.memo-md-table-align-right {
+  text-align: right;
+}
