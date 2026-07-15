@@ -1,54 +1,190 @@
+import CoreGraphics
 import Foundation
 
-struct MemoNote: Codable, Equatable, Identifiable {
+enum MemoAspectRatio: String, Codable, CaseIterable, Equatable {
+    case square
+    case portrait
+
+    var value: CGFloat {
+        switch self {
+        case .square: 1
+        case .portrait: 3 / 4
+        }
+    }
+
+    static func closest(to value: CGFloat) -> MemoAspectRatio {
+        abs(value - square.value) <= abs(value - portrait.value) ? .square : .portrait
+    }
+}
+
+struct MemoAttachment: Codable, Equatable, Identifiable {
     let id: UUID
+    var fileName: String
+    var originalName: String
+    let createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        fileName: String,
+        originalName: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.fileName = fileName
+        self.originalName = originalName
+        self.createdAt = createdAt
+    }
+}
+
+struct MemoPlacement: Codable, Equatable {
+    var groupID: UUID
+    var order: Int
+
+    init(groupID: UUID, order: Int) {
+        self.groupID = groupID
+        self.order = max(0, order)
+    }
+}
+
+struct MemoEdgeGroup: Codable, Equatable, Identifiable {
+    let id: UUID
+    var edge: EdgeDock
+    var normalizedCenter: Double
+    let createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        edge: EdgeDock,
+        normalizedCenter: Double = 0.5,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.edge = edge
+        self.normalizedCenter = Self.normalizedUnitValue(normalizedCenter)
+        self.createdAt = createdAt
+    }
+
+    mutating func normalize() {
+        normalizedCenter = Self.normalizedUnitValue(normalizedCenter)
+    }
+
+    private static func normalizedUnitValue(_ value: Double) -> Double {
+        guard value.isFinite else { return 0.5 }
+        return min(1, max(0, value))
+    }
+}
+
+struct MemoNote: Codable, Equatable, Identifiable {
+    static let translucentOpacity = 0.72
+
+    let id: UUID
+    var title: String {
+        didSet {
+            let normalized = Self.normalizedTitle(title, fallback: "메모")
+            if title != normalized { title = normalized }
+        }
+    }
     var content: String
-    var richTextData: Data?
-    var frame: NoteFrame
-    var isVisible: Bool
     var color: NoteColor
-    var floatsOnTop: Bool
-    var isTranslucent: Bool
-    var usesAutomaticHeight: Bool
+    var textColorHex: String
+    var isActive: Bool
+    var placement: MemoPlacement
+    var aspectRatio: MemoAspectRatio
+    var opacity: Double {
+        didSet {
+            let normalized = Self.normalizedUnitValue(opacity, fallback: 1)
+            if opacity != normalized { opacity = normalized }
+        }
+    }
+    var attachments: [MemoAttachment]
     let createdAt: Date
     var updatedAt: Date
 
     init(
         id: UUID = UUID(),
+        title: String? = nil,
         content: String = "",
-        richTextData: Data? = nil,
-        frame: NoteFrame,
-        isVisible: Bool = true,
         color: NoteColor = .black,
-        floatsOnTop: Bool = false,
-        isTranslucent: Bool = false,
-        usesAutomaticHeight: Bool = true,
+        textColorHex: String? = nil,
+        isActive: Bool = true,
+        placement: MemoPlacement,
+        aspectRatio: MemoAspectRatio = .portrait,
+        opacity: Double = 1,
+        attachments: [MemoAttachment] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
         self.id = id
+        self.title = Self.normalizedTitle(
+            title ?? Self.deriveTitle(from: content, fallbackIndex: 1),
+            fallback: "메모"
+        )
         self.content = content
-        self.richTextData = richTextData
-        self.frame = frame
-        self.isVisible = isVisible
         self.color = color
-        self.floatsOnTop = floatsOnTop
-        self.isTranslucent = isTranslucent
-        self.usesAutomaticHeight = usesAutomaticHeight
+        self.textColorHex = textColorHex ?? Self.defaultTextColorHex(for: color)
+        self.isActive = isActive
+        self.placement = MemoPlacement(groupID: placement.groupID, order: placement.order)
+        self.aspectRatio = aspectRatio
+        self.opacity = Self.normalizedUnitValue(opacity, fallback: 1)
+        self.attachments = attachments
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
 
+    static func deriveTitle(from content: String, fallbackIndex: Int) -> String {
+        for line in content.components(separatedBy: .newlines) {
+            let candidate = markdownTitleCandidate(from: line)
+            if !candidate.isEmpty {
+                return String(candidate.prefix(6))
+            }
+        }
+
+        return String("메모\(max(1, fallbackIndex))".prefix(6))
+    }
+
+    static func defaultTextColorHex(for color: NoteColor) -> String {
+        color == .black ? "#FFFFFF" : "#1F1F1F"
+    }
+
+    static func hasMeaningfulContent(_ content: String) -> Bool {
+        let trimmed = content
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        if trimmed.range(of: #"!\[[^\]]*\]\([^)]+\)"#, options: .regularExpression) != nil {
+            return true
+        }
+        if trimmed.range(of: #"^\s*[-+*]\s+\[[ xX]\]"#, options: [.regularExpression]) != nil {
+            return true
+        }
+        if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") || trimmed.contains("|") {
+            return true
+        }
+
+        var visible = trimmed
+        visible = replacingMatches(in: visible, pattern: #"<[^>]+>"#, with: "")
+        visible = visible.replacingOccurrences(of: #"[\s`*_~#>\[\](){}:;,.!\-+]"#, with: "", options: .regularExpression)
+        return !visible.isEmpty
+    }
+
+    mutating func normalize(fallbackIndex: Int) {
+        title = Self.normalizedTitle(title, fallback: "메모\(max(1, fallbackIndex))")
+        placement = MemoPlacement(groupID: placement.groupID, order: placement.order)
+        opacity = Self.normalizedUnitValue(opacity, fallback: 1)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
+        case title
         case content
-        case richTextData
-        case frame
-        case isVisible
         case color
-        case floatsOnTop
-        case isTranslucent
-        case usesAutomaticHeight
+        case textColorHex
+        case isActive
+        case placement
+        case aspectRatio
+        case opacity
+        case attachments
         case createdAt
         case updatedAt
     }
@@ -57,15 +193,76 @@ struct MemoNote: Codable, Equatable, Identifiable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         id = try container.decode(UUID.self, forKey: .id)
-        content = try container.decode(String.self, forKey: .content)
-        richTextData = try container.decodeIfPresent(Data.self, forKey: .richTextData)
-        frame = try container.decode(NoteFrame.self, forKey: .frame)
-        isVisible = try container.decode(Bool.self, forKey: .isVisible)
+        content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+        title = Self.normalizedTitle(
+            try container.decodeIfPresent(String.self, forKey: .title)
+                ?? Self.deriveTitle(from: content, fallbackIndex: 1),
+            fallback: "메모"
+        )
         color = try container.decodeIfPresent(NoteColor.self, forKey: .color) ?? .black
-        floatsOnTop = try container.decodeIfPresent(Bool.self, forKey: .floatsOnTop) ?? false
-        isTranslucent = try container.decodeIfPresent(Bool.self, forKey: .isTranslucent) ?? false
-        usesAutomaticHeight = try container.decodeIfPresent(Bool.self, forKey: .usesAutomaticHeight) ?? true
+        textColorHex = try container.decodeIfPresent(String.self, forKey: .textColorHex)
+            ?? Self.defaultTextColorHex(for: color)
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
+        placement = try container.decode(MemoPlacement.self, forKey: .placement)
+        aspectRatio = try container.decodeIfPresent(MemoAspectRatio.self, forKey: .aspectRatio) ?? .portrait
+        opacity = Self.normalizedUnitValue(
+            try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1,
+            fallback: 1
+        )
+        attachments = try container.decodeIfPresent([MemoAttachment].self, forKey: .attachments) ?? []
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(content, forKey: .content)
+        try container.encode(color, forKey: .color)
+        try container.encode(textColorHex, forKey: .textColorHex)
+        try container.encode(isActive, forKey: .isActive)
+        try container.encode(placement, forKey: .placement)
+        try container.encode(aspectRatio, forKey: .aspectRatio)
+        try container.encode(opacity, forKey: .opacity)
+        try container.encode(attachments, forKey: .attachments)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
+
+    private static func normalizedTitle(_ title: String, fallback: String) -> String {
+        let collapsed = title
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        let resolved = collapsed.isEmpty ? fallback : collapsed
+        return String(resolved.prefix(6))
+    }
+
+    private static func normalizedUnitValue(_ value: Double, fallback: Double) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(1, max(0, value))
+    }
+
+    private static func markdownTitleCandidate(from line: String) -> String {
+        var value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.hasPrefix("```") && !value.hasPrefix("~~~") else { return "" }
+
+        value = replacingMatches(in: value, pattern: #"^(?:#{1,6}|>+|[-+*]|\d+[.)])\s+"#, with: "")
+        value = replacingMatches(in: value, pattern: #"^\[[ xX]\]\s*"#, with: "")
+        value = replacingMatches(in: value, pattern: #"!\[([^\]]*)\]\([^)]*\)"#, with: "$1")
+        value = replacingMatches(in: value, pattern: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1")
+        value = replacingMatches(in: value, pattern: #"<[^>]+>"#, with: "")
+        value = value.replacingOccurrences(of: #"[\`*_~#]"#, with: "", options: .regularExpression)
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "[](){}:;,.!?-| ").union(.whitespaces))
+
+        return value
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+    }
+
+    private static func replacingMatches(in value: String, pattern: String, with replacement: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return value }
+        let range = NSRange(value.startIndex..., in: value)
+        return expression.stringByReplacingMatches(in: value, range: range, withTemplate: replacement)
     }
 }

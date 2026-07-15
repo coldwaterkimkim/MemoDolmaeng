@@ -18,6 +18,11 @@ let package = Package(
                 .copy("Resources/MarkdownEditor"),
                 .copy("Resources/MarkdownRenderer")
             ]
+        ),
+        .testTarget(
+            name: "MemoDolmaengTests",
+            dependencies: ["MemoDolmaeng"],
+            path: "Tests/MemoDolmaengTests"
         )
     ]
 )

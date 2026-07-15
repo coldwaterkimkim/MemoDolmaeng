@@ -1,70 +1,68 @@
 # Status
 
-## Current Stage
+## 현재 단계
 
-MVP 1 scaffold plus raw Markdown source-of-truth and Typora-like live Markdown editor are implemented.
+Edge v3 저장·배치와 Crepe 편집기 전환, 격리 앱 검증, 실제 사용자 데이터 이전까지 완료됐습니다. 패키지 앱은 실제 v3 데이터로 재실행한 상태입니다.
 
-## Product Behavior
+## 구현된 제품 동작
 
-- Launching the app opens the last visible memo windows.
-- If there are no saved memos, the app creates one empty memo.
-- Memo windows are normal-level windows, so other apps can cover them.
-- New memo windows default to `300` px wide and compact height, then grow vertically with typed content.
-- Manually resizing a memo disables automatic height for that note and persists the user-sized frame.
-- Memo windows use a borderless sticky-note shape without macOS traffic-light controls.
-- New note surfaces default to black paper with a near-black drag strip; older notes keep their saved color.
-- Empty notes render as blank paper, without placeholder text.
-- Note content uses D2CodingLigature Nerd Font `12pt` body text, fill-matched caret, outside-like stroke rendering, tight line spacing, 12 px horizontal text inset, 10 px vertical text inset, and no extra hidden `NSTextContainer` side padding.
-- Markdown typography is scaled for the readable compact body size: Heading 1 `19pt`, Heading 2 `16.5pt`, Heading 3 `14pt`, list/quote text `12pt`, inline/code block text `12pt`, list indent `15`, and quote indent `10`.
-- New empty notes open at a compact one-line size by default; the new code default is `300 x 48`, while existing local preferences may preserve a previously saved minimum height.
-- `MemoDolmaeng > Preferences...` opens a tuning panel for fill color, stroke color/weight, body and Markdown font sizes, paragraph spacing, list/quote indents, note width/height, text padding, drag strip height, paper-only translucent alpha, window edge stroke, and shadow.
-- Memo windows intentionally avoid forced app activation/frontmost behavior so they do not steal attention.
-- Clicking or dragging one memo window now raises only that window. `Float on Top` windows stay independent and do not pull normal windows to the front.
-- `Window > Bring All to Front` remains the explicit command for raising all visible memo windows together. Shortcut: `Cmd+Shift+S`.
-- When the editor is not focused, dragging the note body moves the window. When the caret is visible, the note body remains an editing surface and only the top strip moves the window.
-- The top drag strip has a bottom stroke that follows the window edge stroke color, opacity, and weight, making the draggable area easier to identify without adding heavier chrome.
-- Double-clicking the top drag strip resets only the memo width to the default automatic width while preserving the current height and persisted frame.
-- If a note has had real content and then becomes empty, the top strip bottom stroke becomes a thin countdown line for 2 seconds. The line uses the window edge stroke weight, keeps the existing shrink direction, follows the text ink color, cancels when the user types content again, and deletes/closes the note if it remains empty. Fresh blank notes are not auto-deleted.
-- Inactive body dragging for the `WKWebView` editor is handled by the native `MemoMarkdownWebView` mouse events, not by JavaScript drag messages, so each note window decides focus independently and window movement stays smooth.
-- Text editing now uses a bundled `WKWebView` + CodeMirror Markdown editor as the primary note surface. There is no Live/Preview, Source, or Raw button in the sticky note.
-- The CodeMirror document is the editable raw Markdown source. Visual rendering is applied through editor decorations, so headings, inline bold/italic, inline code, raw list/task/numbered markers, blockquotes, horizontal rules, math markers, links/autolinks, strikethrough, and footnote markers remain editable.
-- Inactive fenced code blocks and GFM tables render as block widgets; clicking the rendered block returns the caret to the raw Markdown source for editing.
-- The older bundled `markdown-it`, task-list, footnote, `markdown-it-texmath`/KaTeX, and DOMPurify preview renderer remains in resources for renderer-backed use, but the main app flow is the live editor.
-- ChatGPT-style pasted Markdown remains raw in note `content`, including headings, nested lists, GFM tables, task lists, strikethrough, fenced code blocks with language tags, math, links, autolinks, blockquotes, horizontal rules, safe HTML, footnotes, and Mermaid code fences.
-- Markdown image syntax remains Markdown source and is displayed safely in the live editor, not as an automatic remote image fetch.
-- `Enter` continues raw Markdown lists; pressing `Enter` on an empty list item immediately removes the marker and returns to body text.
-- `Tab` indents raw Markdown list items as sublists and ordered sublists restart at `1.`; `Shift+Tab` outdents by one Markdown indent level.
-- Paste now prefers semantic HTML-to-Markdown import when the clipboard includes rendered web content, then falls back to plain text when HTML is unavailable.
-- Rich paste preserves headings, ordered/unordered/task lists, tables, fenced code language tags, blockquotes, links, images, emphasis, and strikethrough as raw Markdown source.
-- Rich paste strips external font, size, CSS class, and theme styling. Only meaningful inline text colors are preserved as safe raw Markdown `<span style="color: #rrggbb">...</span>` fragments; neutral white/black/gray theme colors are ignored.
-- Rich paste drops non-content clipboard artifacts such as copy buttons, SVG icons, hidden labels, and Figma metadata, and normalizes avoidable Turndown escapes such as heading `1\.` and escaped paired emphasis markers.
-- Paired text input for `[]`, `''`, `""`, and `<>` is owned by the CodeMirror input layer and normalized against BetterTouchTool-style duplicate events, so opener/caret drift collapses into one editable pair with the caret inside.
-- `Format` menu exposes Body, headings, list blocks, quote, checkbox, code block, divider, bold, italic, inline code, links, and Reset Formatting. These commands now route into the CodeMirror editor and insert or remove raw Markdown markers instead of converting source into rendered rich text.
-- Format shortcuts are owned by the live editor: `Cmd+Option+0/1/2/3` for Body/Heading 1/Heading 2/Heading 3, `Cmd+Shift+8` for bullets, `Cmd+Shift+7` for numbered lists, `Cmd+Option+Q` for quote, `Cmd+Option+C` for checkbox, `Cmd+B` for bold, `Cmd+I` for italic, `Cmd+E` for inline code, and `Cmd+K` for links.
-- App-level shortcuts are also bridged while the WebView editor has focus: `Cmd+N` creates a note, `Cmd+W` closes the current note, `Cmd+Option+F` toggles Float on Top, and `Cmd+Option+T` toggles Translucent.
-- `Cmd+A` is bridged into the CodeMirror editor, so it selects the full raw Markdown document including rendered table/code widgets.
-- Bold, italic, and inline code shortcuts wrap selected text in raw Markdown markers. Empty selections insert paired markers with the caret between them.
-- `File > Show All Notes` intentionally has no shortcut so `Cmd+Option+0` belongs unambiguously to `Format > Body`.
-- `Window > Float on Top` toggles floating state per note and persists it. Shortcut: `Cmd+Option+F`.
-- `Window > Translucent` toggles note paper translucency per note and persists it. Text and rich content stay fully opaque. Shortcut: `Cmd+Option+T`.
-- `Cmd+A`, `Cmd+Option+F`, and `Cmd+Option+T` are also handled at the sticky-window/WebView level, so they keep working while the memo editor owns keyboard focus.
-- `Color` menu changes the current note color and persists it. Available colors: Black, Yellow, Blue, Green, Pink, Purple, Gray, and White.
-- Closing an empty memo hides it immediately.
-- Closing a memo with content shows a Stickies-like confirmation with Save, Delete Note, and Cancel.
-- `File > New Note` creates another independent memo window. New notes always start Black unless the user explicitly changes a note through the Color menu.
-- `File > Show All Notes` reopens hidden memo windows.
-- Memo text and window frames are stored locally in Application Support.
-- Raw Markdown `content` is the source of truth. New text edits write Markdown strings through the CodeMirror bridge and stop writing rendered rich text archives.
-- `Fixtures/chatgpt-markdown-compatibility.md` is the compatibility fixture for raw ChatGPT-style Markdown paste and live editor verification.
-- `Fixtures/chatgpt-rich-clipboard.html` is the compatibility fixture for rendered ChatGPT/web HTML clipboard import.
-- `Fixtures/editor-render-qa.html` is the visual rendering fixture for the live editor surface, covering list/task/quote indent, rendered GFM tables, and rendered fenced code blocks.
-- `script/build_and_run.sh` rebuilds the bundled CodeMirror editor before compiling and packaging the macOS app.
+- 메뉴 막대 상주, Dock 미표시, 모든 Space 및 전체 화면 보조 패널
+- 왼쪽, 오른쪽, 메뉴 막대 아래 상단의 2px 핫존
+- 0.18초 표시 대기, 0.35초 숨김 지연, 120ms 인덱스 애니메이션
+- 기본 오른쪽 중앙 그룹, 그룹 안 0px 및 그룹 사이 6px 간격
+- 세 엣지 드래그, 단독 그룹 분리, 12px 자석 병합과 삽입 순서
+- 작은 화면 전역 압축과 남은 연속 공간별 추가 압축
+- `closed / peek / ice` 단일 패널 상태와 별도 `hidden / visible(edge) / dragging` 인덱스 상태
+- 활성 10개 제한, 무제한 보관, 검색과 명시적 영구 삭제
+- 임시 빈 초안 비저장, 기존 메모가 비면 전환/접기/보관/종료 시 영구 삭제
+- 첨부파일 staged 삭제와 다음 실행 복구 또는 마무리
+- Carbon `Cmd+Shift+M`, 열린 패널의 순환과 숫자 단축키
 
-## Next Stage
+## 편집기
 
-MVP 2 should add the next sticky-note affordances:
+- `@milkdown/crepe`와 `@milkdown/kit`은 `7.21.2`로 정확히 고정됐습니다.
+- 공유 WKWebView의 Crepe 인스턴스 하나를 메모 전환 시 `replaceAll`로 재사용합니다.
+- 공식 Crepe frame 테마, 선택 툴바, `/` 메뉴, 링크 UI를 사용합니다.
+- `BlockEdit`은 `/` 메뉴를 위해 유지하되 왼쪽 추가·드래그 핸들만 숨겨 본문 여백을 대칭으로 유지합니다.
+- 이미지, 코드, 표, 수식 블록을 포함한 Crepe 기본 블록 편집 UI를 활성화했습니다.
+- 이전 네이티브 하단 툴바와 Swift 명령 버스를 제거했습니다.
+- 좁은 340px 패널에서도 상하좌우 여백과 플로팅 UI가 어긋나지 않도록 편집 영역을 앱 크기에 맞췄습니다.
+- 외부 문서 로드/전환은 autosave로 취급하지 않고 실제 사용자 변경만 저장합니다.
+- 밑줄, 안전한 색상, 문단 정렬은 기존 HTML 표현으로 왕복합니다.
+- 지원하지 않는 raw HTML은 실행되지 않는 텍스트 노드로 보존됩니다.
+- 로컬 이미지는 20MB 제한과 실제 이미지 검증을 거쳐 `memodolmaeng-asset://` 보안 로더로 표시합니다.
 
-- collapse/expand
-- duplicate
-- explicit Save/Export behavior behind the current Save prompt
-- optional live-editor polish such as real KaTeX inline rendering, code-block copy buttons, syntax highlighting, and a user-controlled remote image loading policy
+## 저장과 이전
+
+- `schemaVersion: 3` 문서는 `notes`, `edgeGroups`, `defaultGroupID`를 가집니다.
+- 메모 배치는 `placement.groupID`와 `placement.order`로 저장됩니다.
+- v2 이전 직전에 원본 바이트를 `notes-pre-edge-v3-<timestamp>.json`으로 백업합니다.
+- v2 활성 메모는 `handlePosition` 내림차순으로 정렬해 오른쪽 중앙 기본 그룹에 합칩니다.
+- 빈 legacy 메모는 백업에만 남고 라이브 v3 데이터에는 들어오지 않습니다.
+- 백업 또는 저장 실패 시 원본 v2를 유지하고 workspace를 열지 않습니다.
+- `MEMODOLMAENG_DATA_DIR`로 실제 데이터와 분리된 실행 검증이 가능합니다.
+
+## 실제 데이터 이전 결과
+
+- 실제 v2 메모 9개를 v3로 이전했고 ID, 제목, 본문, 활성 상태와 표시 순서가 모두 일치합니다.
+- 원본 바이트 백업은 `Backups/notes-pre-edge-v3-20260715-050947-366.json`입니다.
+- 이전 전 원본과 백업의 SHA-256은 모두 `25596e6c3a8131280ebad418ffc4ec6a58f2a71bc794e7263c4c2d57ff388e11`입니다.
+- 이전 직후에는 오른쪽 중앙 기본 그룹 하나와 활성 메모 9개로 시작했고, 현재 실제 데이터에는 사용자 배치가 반영된 그룹 4개와 활성 메모 9개가 있습니다.
+- 앱을 다시 실행해도 v3 백업은 중복 생성되지 않았고 9개 본문도 변하지 않았습니다.
+
+## 자동 검증 기준선
+
+- Swift 테스트: 27개 통과
+- Milkdown/Crepe 순수 변환 테스트: 3개 통과
+- 실제 WKWebView 통합 테스트: Crepe 로드, 빈 문단과 제목 블록, semantic Markdown, 커스텀 서식, 로컬 이미지, raw HTML 실행 차단
+- v1/v2→v3 백업과 rollback, 활성 10개, 빈 메모 필터, 그룹 정규화
+- 세 엣지 프레임, 메뉴 막대 회피, 작은 화면 10개 그룹 무겹침, 화면 fallback
+- staged 첨부파일 삭제의 재실행 복구와 마무리, 업로드 위장 파일과 asset path traversal 차단
+
+## 검증 완료와 남은 현장 확인
+
+- 실제 9개 메모 복사본 이전, 본문·ID·순서 비교, 재실행 복원을 완료했습니다.
+- 340px 패널에서 `# + Space` 제목 변환, `/` 메뉴, 선택 툴바, 블록 핸들 미표시, 대칭 여백과 가로 넘침 없음을 브라우저로 확인했습니다.
+- 패키지 앱에서 Crepe 문서 표시, 새 초안 저장, 빈 초안 비저장, 기존 메모를 비운 뒤 접을 때의 영구 삭제를 격리 데이터로 확인했습니다.
+- 자동 UI 제약 때문에 물리 포인터로 2px 핫존을 오래 유지하는 장면은 캡처하지 못했습니다. 엣지 노출 타이밍과 세 엣지 드래그 감각은 실제 사용 환경에서 최종 체감 확인이 필요합니다.
+- 실제 다중 모니터 분리·재연결, 전체 화면 앱, 여러 Space에서의 접근성도 해당 장비 상태에서 현장 확인이 남아 있습니다.

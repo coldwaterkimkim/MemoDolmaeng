@@ -1,0 +1,365 @@
+import Foundation
+import XCTest
+@testable import MemoDolmaeng
+
+@MainActor
+final class NoteStoreTests: XCTestCase {
+    func testLegacyMigrationFiltersEmptyNotesAndCreatesPackedDefaultGroup() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        var legacyNotes = [LegacyNoteFixture.empty(updatedAt: baseDate)]
+        for index in 0..<12 {
+            legacyNotes.append(
+                LegacyNoteFixture(
+                    content: "# 메모 \(index + 1)",
+                    isVisible: index < 3,
+                    color: index == 0 ? .pink : .black,
+                    isTranslucent: index == 0,
+                    updatedAt: baseDate.addingTimeInterval(TimeInterval(index))
+                )
+            )
+        }
+        let visibleIDs = Set(legacyNotes.filter(\.isVisible).map(\.id))
+        try fixture.writeLegacy(legacyNotes)
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL, now: { baseDate })
+
+        XCTAssertEqual(store.notes.count, 12)
+        XCTAssertEqual(store.activeNotes().count, 10)
+        XCTAssertTrue(visibleIDs.isSubset(of: Set(store.activeNotes().map(\.id))))
+        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+        XCTAssertTrue(visibleIDs.contains(ordered[0].id))
+        XCTAssertTrue(visibleIDs.contains(ordered[1].id))
+        XCTAssertTrue(visibleIDs.contains(ordered[2].id))
+        XCTAssertTrue(store.notes.allSatisfy { $0.placement.groupID == store.defaultGroupID })
+        XCTAssertEqual(store.defaultGroup.edge, .right)
+        XCTAssertFalse(store.notes.contains(where: { !MemoNote.hasMeaningfulContent($0.content) }))
+
+        let envelope = try fixture.readEnvelope()
+        XCTAssertEqual(envelope.schemaVersion, 3)
+        XCTAssertEqual(envelope.edgeGroups.count, 1)
+    }
+
+    func testV2MigrationPreservesVisualOrderAndBacksUpOriginalBytes() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let notes = [
+            V2NoteFixture(title: "아래", content: "아래", handlePosition: 0.1),
+            V2NoteFixture(title: "위", content: "위", handlePosition: 0.9),
+            V2NoteFixture(title: "중간", content: "중간", handlePosition: 0.5),
+            V2NoteFixture(title: "빈메모", content: "   ", handlePosition: 0.7)
+        ]
+        let originalData = try fixture.writeV2(notes)
+        let store = try NoteStore(
+            persistenceURL: fixture.notesURL,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        XCTAssertEqual(
+            store.activeNotes().sorted { $0.placement.order < $1.placement.order }.map(\.title),
+            ["위", "중간", "아래"]
+        )
+        XCTAssertEqual(store.defaultGroup.edge, .right)
+        let backups = try fixture.backups()
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertTrue(backups[0].lastPathComponent.hasPrefix("notes-pre-edge-v3-"))
+        XCTAssertEqual(try Data(contentsOf: backups[0]), originalData)
+
+        _ = try NoteStore(persistenceURL: fixture.notesURL)
+        XCTAssertEqual(try fixture.backups().count, 1, "v3 reload must not create another migration backup")
+    }
+
+    func testMigrationBackupFailureThrowsWithoutOverwritingSource() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let originalData = try fixture.writeV2([V2NoteFixture(title: "보존", content: "지켜야 할 메모")])
+        try Data("blocks-directory-creation".utf8).write(
+            to: fixture.directory.appendingPathComponent("Backups")
+        )
+
+        XCTAssertThrowsError(try NoteStore(persistenceURL: fixture.notesURL))
+        XCTAssertEqual(try Data(contentsOf: fixture.notesURL), originalData)
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.notesURL))
+        XCTAssertTrue(root is [String: Any])
+    }
+
+    func testEmptyNotesCannotBeCreatedAndStoredEmptyNotesAreRemovedOnLoad() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        XCTAssertThrowsError(try store.createNote(content: " \n\t")) { error in
+            XCTAssertEqual(error as? NoteStoreError, .emptyNoteCannotBePersisted)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.notesURL.path))
+
+        let group = MemoEdgeGroup(edge: .right)
+        let empty = MemoNote(
+            title: "빈 메모",
+            content: "",
+            placement: MemoPlacement(groupID: group.id, order: 0)
+        )
+        try fixture.writeEnvelope(
+            NoteStoreEnvelope(notes: [empty], edgeGroups: [group], defaultGroupID: group.id)
+        )
+        let reloaded = try NoteStore(persistenceURL: fixture.notesURL)
+        XCTAssertTrue(reloaded.notes.isEmpty)
+        XCTAssertTrue(try fixture.readEnvelope().notes.isEmpty)
+    }
+
+    func testActiveCapacityIsEnforcedForCreateAndRestore() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        var tick = 0.0
+        let store = try NoteStore(
+            persistenceURL: fixture.notesURL,
+            now: {
+                defer { tick += 1 }
+                return Date(timeIntervalSince1970: tick)
+            }
+        )
+        let first = try store.createNote(content: "첫 메모")
+        for index in 1..<NoteStore.maxActiveNotes { try store.createNote(content: "메모 \(index)") }
+
+        XCTAssertThrowsError(try store.createNote(content: "거절될 메모")) { error in
+            XCTAssertEqual(error as? NoteStoreError, .activeCapacityReached)
+        }
+        XCTAssertTrue(store.setActive(noteID: first.id, isActive: false))
+        let replacement = try store.createNote(content: "새 활성 메모")
+        XCTAssertFalse(store.setActive(noteID: first.id, isActive: true))
+        XCTAssertTrue(store.setActive(noteID: replacement.id, isActive: false))
+        XCTAssertTrue(store.setActive(noteID: first.id, isActive: true))
+        XCTAssertEqual(store.activeNotes().count, NoteStore.maxActiveNotes)
+    }
+
+    func testReloadPreservesV3FieldsAndRemovesLegacyPosition() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let note = try store.createNote(
+            title: "재로딩확인",
+            content: "본문",
+            color: .green,
+            aspectRatio: .square,
+            opacity: 0.43,
+            attachments: [MemoAttachment(fileName: "stored-image.png", originalName: "image.png")]
+        )
+        XCTAssertTrue(
+            store.placeNote(
+                noteID: note.id,
+                edge: .top,
+                normalizedCenter: 0.7,
+                mergeInto: nil,
+                order: 0
+            )
+        )
+        store.updateAppearance(
+            noteID: note.id,
+            color: .purple,
+            textColorHex: "#123456",
+            aspectRatio: .portrait,
+            opacity: 0.6
+        )
+
+        let reloaded = try NoteStore(persistenceURL: fixture.notesURL)
+        let saved = try XCTUnwrap(reloaded.note(withID: note.id))
+        XCTAssertEqual(reloaded.group(withID: saved.placement.groupID)?.edge, .top)
+        XCTAssertEqual(saved.aspectRatio, .portrait)
+        XCTAssertEqual(saved.opacity, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(saved.color, .purple)
+        XCTAssertEqual(saved.textColorHex, "#123456")
+
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.notesURL)) as? [String: Any]
+        )
+        let encodedNote = try XCTUnwrap((json["notes"] as? [[String: Any]])?.first)
+        XCTAssertNotNil(encodedNote["placement"])
+        XCTAssertNil(encodedNote["handlePosition"])
+        XCTAssertNotNil(json["edgeGroups"])
+        XCTAssertNotNil(json["defaultGroupID"])
+    }
+
+    func testAttachToDefaultRemovesUnusedManualGroup() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let note = try store.createNote(content: "이동")
+
+        XCTAssertTrue(store.placeNote(noteID: note.id, edge: .left, normalizedCenter: 0.2, mergeInto: nil, order: 0))
+        let manualID = try XCTUnwrap(store.note(withID: note.id)?.placement.groupID)
+        XCTAssertNotEqual(manualID, store.defaultGroupID)
+        XCTAssertTrue(store.attachToDefaultGroup(noteID: note.id))
+        XCTAssertEqual(store.note(withID: note.id)?.placement.groupID, store.defaultGroupID)
+        XCTAssertNil(store.group(withID: manualID))
+    }
+
+    func testTitleDerivationAndMeaningfulContentDetection() {
+        XCTAssertEqual(
+            MemoNote.deriveTitle(from: "\n  \n### **오늘 할 일 정리**", fallbackIndex: 3),
+            "오늘 할 일"
+        )
+        XCTAssertEqual(MemoNote.deriveTitle(from: "```\n---", fallbackIndex: 3), "메모3")
+        XCTAssertFalse(MemoNote.hasMeaningfulContent(" \n\t\u{200B}"))
+        XCTAssertTrue(MemoNote.hasMeaningfulContent("- [ ]"))
+        XCTAssertTrue(MemoNote.hasMeaningfulContent("![이미지](memodolmaeng-asset://id/image.png)"))
+    }
+
+    func testInitializerThrowsForUnreadablePersistenceData() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+        try Data("not-json".utf8).write(to: fixture.notesURL)
+        XCTAssertThrowsError(try NoteStore(persistenceURL: fixture.notesURL))
+    }
+}
+
+private struct V2NoteFixture: Codable {
+    let id: UUID
+    let title: String
+    let content: String
+    let color: NoteColor
+    let textColorHex: String
+    let isActive: Bool
+    let handlePosition: Double
+    let aspectRatio: MemoAspectRatio
+    let opacity: Double
+    let attachments: [MemoAttachment]
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        content: String,
+        color: NoteColor = .black,
+        textColorHex: String = "#FFFFFF",
+        isActive: Bool = true,
+        handlePosition: Double = 0.5,
+        aspectRatio: MemoAspectRatio = .portrait,
+        opacity: Double = 1,
+        attachments: [MemoAttachment] = [],
+        createdAt: Date = Date(timeIntervalSince1970: 1_600_000_000),
+        updatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) {
+        self.id = id
+        self.title = title
+        self.content = content
+        self.color = color
+        self.textColorHex = textColorHex
+        self.isActive = isActive
+        self.handlePosition = handlePosition
+        self.aspectRatio = aspectRatio
+        self.opacity = opacity
+        self.attachments = attachments
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+private struct V2EnvelopeFixture: Codable {
+    let schemaVersion: Int
+    let notes: [V2NoteFixture]
+
+    init(notes: [V2NoteFixture]) {
+        schemaVersion = 2
+        self.notes = notes
+    }
+}
+
+private struct LegacyNoteFixture: Codable {
+    let id: UUID
+    var content: String
+    var frame: NoteFrame
+    var isVisible: Bool
+    var color: NoteColor
+    var floatsOnTop: Bool
+    var isTranslucent: Bool
+    var usesAutomaticHeight: Bool
+    let createdAt: Date
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        content: String,
+        frame: NoteFrame = NoteFrame(x: 100, y: 100, width: 300, height: 400),
+        isVisible: Bool = true,
+        color: NoteColor = .black,
+        floatsOnTop: Bool = false,
+        isTranslucent: Bool = false,
+        usesAutomaticHeight: Bool = true,
+        createdAt: Date = Date(timeIntervalSince1970: 1_600_000_000),
+        updatedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) {
+        self.id = id
+        self.content = content
+        self.frame = frame
+        self.isVisible = isVisible
+        self.color = color
+        self.floatsOnTop = floatsOnTop
+        self.isTranslucent = isTranslucent
+        self.usesAutomaticHeight = usesAutomaticHeight
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    static func empty(updatedAt: Date) -> LegacyNoteFixture {
+        LegacyNoteFixture(content: " \n\t", isVisible: false, updatedAt: updatedAt)
+    }
+}
+
+private final class TemporaryStoreFixture {
+    let directory: URL
+    let notesURL: URL
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengTests-\(UUID().uuidString)", isDirectory: true)
+        notesURL = directory.appendingPathComponent("notes.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    @discardableResult
+    func writeLegacy(_ notes: [LegacyNoteFixture]) throws -> Data {
+        try write(notes)
+    }
+
+    @discardableResult
+    func writeV2(_ notes: [V2NoteFixture]) throws -> Data {
+        try write(V2EnvelopeFixture(notes: notes))
+    }
+
+    func writeEnvelope(_ envelope: NoteStoreEnvelope) throws {
+        _ = try write(envelope)
+    }
+
+    func readEnvelope() throws -> NoteStoreEnvelope {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(NoteStoreEnvelope.self, from: Data(contentsOf: notesURL))
+    }
+
+    func backups() throws -> [URL] {
+        let directory = directory.appendingPathComponent("Backups", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    @discardableResult
+    private func write<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(value)
+        try data.write(to: notesURL)
+        return data
+    }
+}

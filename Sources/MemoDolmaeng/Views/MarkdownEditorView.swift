@@ -1,14 +1,28 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 struct MarkdownEditorView: NSViewRepresentable {
     let markdown: String
     let theme: MarkdownEditorTheme
+    let assetRootURL: URL
     let onMarkdownChange: (String) -> Void
+    let onImageUpload: (Data, String) throws -> URL
+
+    static var editorIndexURL: URL? {
+        Bundle.module.url(
+            forResource: "index",
+            withExtension: "html",
+            subdirectory: "MarkdownEditor"
+        )
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onMarkdownChange: onMarkdownChange)
+        Coordinator(
+            onMarkdownChange: onMarkdownChange,
+            onImageUpload: onImageUpload
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -20,15 +34,17 @@ struct MarkdownEditorView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = userContentController
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.setURLSchemeHandler(
+            MemoAssetSchemeHandler(rootURL: assetRootURL),
+            forURLScheme: MemoAssetSchemeHandler.scheme
+        )
 
         let webView = MemoMarkdownWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
-        let coordinator: Coordinator = context.coordinator
+        webView.uiDelegate = context.coordinator
+        let coordinator = context.coordinator
         webView.onRequestEditorFocus = { [weak coordinator] point in
             coordinator?.focusEditor(at: point)
-        }
-        webView.onRequestPaste = { [weak coordinator] in
-            coordinator?.pasteFromPasteboard() ?? false
         }
         webView.onRequestEditorCommand = { [weak coordinator] command in
             coordinator?.performCommand(command)
@@ -36,9 +52,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
         webView.allowsBackForwardNavigationGestures = false
         webView.setValue(false, forKey: "drawsBackground")
-        if #available(macOS 12.0, *) {
-            webView.underPageBackgroundColor = .clear
-        }
+        webView.underPageBackgroundColor = .clear
 
         context.coordinator.attach(webView)
         context.coordinator.loadEditor(markdown: markdown, theme: theme)
@@ -47,6 +61,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onMarkdownChange = onMarkdownChange
+        context.coordinator.onImageUpload = onImageUpload
         context.coordinator.sync(markdown: markdown, theme: theme)
     }
 
@@ -57,16 +72,17 @@ struct MarkdownEditorView: NSViewRepresentable {
         coordinator.detach()
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
         static let messageNames = [
             "editorReady",
             "editorChanged",
-            "editorHeightChanged",
             "editorFocusChanged",
-            "editorAppCommand"
+            "editorAppCommand",
+            "editorImageUpload"
         ]
 
         var onMarkdownChange: (String) -> Void
+        var onImageUpload: (Data, String) throws -> URL
 
         private weak var webView: WKWebView?
         private var isReady = false
@@ -74,8 +90,13 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var pendingTheme = MarkdownEditorTheme.current()
         private var editorMarkdown = ""
 
-        init(onMarkdownChange: @escaping (String) -> Void) {
+        init(
+            onMarkdownChange: @escaping (String) -> Void,
+            onImageUpload: @escaping (Data, String) throws -> URL
+        ) {
             self.onMarkdownChange = onMarkdownChange
+            self.onImageUpload = onImageUpload
+            super.init()
         }
 
         func attach(_ webView: WKWebView) {
@@ -90,18 +111,13 @@ struct MarkdownEditorView: NSViewRepresentable {
             pendingMarkdown = markdown
             pendingTheme = theme
 
-            guard let indexURL = Bundle.module.url(
-                forResource: "index",
-                withExtension: "html",
-                subdirectory: "MarkdownEditor"
-            ) else {
+            guard let indexURL = MarkdownEditorView.editorIndexURL else {
                 webView?.loadHTMLString(
                     "<html><body><pre>Markdown editor resource missing.</pre></body></html>",
                     baseURL: nil
                 )
                 return
             }
-
             webView?.loadFileURL(indexURL, allowingReadAccessTo: indexURL.deletingLastPathComponent())
         }
 
@@ -114,7 +130,6 @@ struct MarkdownEditorView: NSViewRepresentable {
                 editorMarkdown = markdown
                 evaluate("window.setMemoMarkdown(\(javascriptStringLiteral(markdown)));")
             }
-
             applyTheme(theme)
         }
 
@@ -125,25 +140,6 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         func performCommand(_ command: String) {
             evaluate("window.memoEditorCommand && window.memoEditorCommand(\(javascriptStringLiteral(command)));")
-        }
-
-        func pasteFromPasteboard() -> Bool {
-            let pasteboard = NSPasteboard.general
-            let appleHTMLType = NSPasteboard.PasteboardType("Apple HTML pasteboard type")
-            let html = pasteboard.string(forType: .html) ?? pasteboard.string(forType: appleHTMLType) ?? ""
-            let plainText = pasteboard.string(forType: .string) ?? ""
-
-            guard !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || !plainText.isEmpty
-            else {
-                return false
-            }
-
-            focusEditor()
-            evaluate(
-                "window.memoPasteClipboard && window.memoPasteClipboard(\(javascriptStringLiteral(html)), \(javascriptStringLiteral(plainText)));"
-            )
-            return true
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -170,6 +166,28 @@ struct MarkdownEditorView: NSViewRepresentable {
             decisionHandler(.cancel)
         }
 
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            let panel = NSOpenPanel()
+            panel.title = "메모에 이미지 추가"
+            panel.allowedContentTypes = [.image]
+            panel.canChooseDirectories = false
+            panel.canChooseFiles = true
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+
+            if let window = webView.window {
+                panel.beginSheetModal(for: window) { response in
+                    completionHandler(response == .OK ? panel.urls : nil)
+                }
+            } else {
+                completionHandler(panel.runModal() == .OK ? panel.urls : nil)
+            }
+        }
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
             case "editorReady":
@@ -179,54 +197,65 @@ struct MarkdownEditorView: NSViewRepresentable {
                 guard let markdown = (message.body as? [String: Any])?["markdown"] as? String else { return }
                 editorMarkdown = markdown
                 onMarkdownChange(markdown)
-            case "editorHeightChanged":
-                guard let height = (message.body as? [String: Any])?["height"] as? Double else { return }
-                publishHeight(CGFloat(height))
             case "editorFocusChanged":
                 guard let payload = message.body as? [String: Any],
                       let focused = payload["focused"] as? Bool
-                else {
-                    return
-                }
+                else { return }
                 (webView as? MemoMarkdownWebView)?.editorIsFocused = focused
             case "editorAppCommand":
-                guard let payload = message.body as? [String: Any],
-                      let command = payload["command"] as? String
-                else {
-                    return
-                }
+                guard let command = (message.body as? [String: Any])?["command"] as? String else { return }
                 handleAppCommand(command)
+            case "editorImageUpload":
+                handleImageUpload(message.body)
             default:
                 break
             }
         }
 
-        private func applyTheme(_ theme: MarkdownEditorTheme) {
-            guard let data = try? JSONSerialization.data(withJSONObject: theme.values, options: []),
-                  let json = String(data: data, encoding: .utf8)
+        private func handleImageUpload(_ body: Any) {
+            guard let payload = body as? [String: Any],
+                  let requestID = payload["requestID"] as? String,
+                  let fileName = payload["fileName"] as? String,
+                  let base64 = payload["base64"] as? String,
+                  base64.utf8.count <= 30_000_000,
+                  let data = Data(base64Encoded: base64)
             else {
+                if let requestID = (body as? [String: Any])?["requestID"] as? String {
+                    resolveImageUpload(requestID: requestID, error: "이미지 데이터가 올바르지 않아.")
+                }
                 return
             }
+
+            do {
+                let url = try onImageUpload(data, fileName)
+                resolveImageUpload(requestID: requestID, url: url)
+            } catch {
+                resolveImageUpload(requestID: requestID, error: error.localizedDescription)
+            }
+        }
+
+        private func resolveImageUpload(requestID: String, url: URL? = nil, error: String? = nil) {
+            let urlValue = url.map { javascriptStringLiteral($0.absoluteString) } ?? "null"
+            let errorValue = error.map(javascriptStringLiteral) ?? "null"
+            evaluate(
+                "window.resolveMemoImageUpload && window.resolveMemoImageUpload(\(javascriptStringLiteral(requestID)), \(urlValue), \(errorValue));"
+            )
+        }
+
+        private func applyTheme(_ theme: MarkdownEditorTheme) {
+            guard let data = try? JSONSerialization.data(withJSONObject: theme.values),
+                  let json = String(data: data, encoding: .utf8)
+            else { return }
             evaluate("window.setMemoEditorTheme && window.setMemoEditorTheme(\(json));")
         }
 
-        private func publishHeight(_ height: CGFloat) {
-            guard let controller = webView?.window?.windowController as? NoteWindowController else { return }
-            controller.noteContentHeightDidChange(height + NoteWindowMetrics.dragHandleHeight)
-        }
-
         private func handleAppCommand(_ command: String) {
-            guard let controller = webView?.window?.windowController as? NoteWindowController else { return }
-
+            guard let controller = webView?.window?.windowController as? MemoPanelController else { return }
             switch command {
             case "closeNote":
-                controller.closeNote()
+                controller.requestFold()
             case "newNote":
                 NotificationCenter.default.post(name: .memoDolmaengCreateNoteRequested, object: self)
-            case "toggleFloatOnTop":
-                controller.toggleFloatsOnTop()
-            case "toggleTranslucent":
-                controller.toggleTranslucent()
             default:
                 break
             }
@@ -243,17 +272,13 @@ struct MarkdownEditorView: NSViewRepresentable {
             let viewPoint = webView.convert(windowPoint, from: nil)
             let x = max(0, min(webView.bounds.width, viewPoint.x))
             let y = max(0, min(webView.bounds.height, webView.bounds.height - viewPoint.y))
-            evaluate(
-                "window.focusMemoEditorAt && window.focusMemoEditorAt(\(Double(x)), \(Double(y)));"
-            )
+            evaluate("window.focusMemoEditorAt && window.focusMemoEditorAt(\(Double(x)), \(Double(y)));")
         }
 
         private func javascriptStringLiteral(_ value: String) -> String {
             guard let data = try? JSONEncoder().encode(value),
                   let encoded = String(data: data, encoding: .utf8)
-            else {
-                return "\"\""
-            }
+            else { return "\"\"" }
             return encoded
         }
 
@@ -268,9 +293,12 @@ struct MarkdownEditorTheme: Equatable {
     let values: [String: String]
     private static let contentTopClearance: CGFloat = 12
 
-    static func current(preferences: AppPreferences = .shared) -> MarkdownEditorTheme {
+    static func current(
+        preferences: AppPreferences = .shared,
+        textColor: NSColor? = nil
+    ) -> MarkdownEditorTheme {
         MarkdownEditorTheme(values: [
-            "memo-text-color": cssColor(preferences.textColor),
+            "memo-text-color": cssColor(textColor ?? preferences.textColor),
             "memo-text-stroke-color": cssColor(preferences.strokeColor),
             "memo-text-stroke-width": cssLength(max(0, preferences.strokeWidth)),
             "memo-body-font-size": cssLength(preferences.bodyFontSize),
@@ -303,99 +331,19 @@ struct MarkdownEditorTheme: Equatable {
 final class MemoMarkdownWebView: WKWebView {
     var editorIsFocused = false
     var onRequestEditorFocus: ((NSPoint) -> Void)?
-    var onRequestPaste: (() -> Bool)?
     var onRequestEditorCommand: ((String) -> Bool)?
-    private var inactiveDragContext: InactiveWebDragContext?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
 
-    override func mouseDown(with event: NSEvent) {
-        guard !editorIsFocused else {
-            super.mouseDown(with: event)
-            return
-        }
-
-        guard let window else {
-            super.mouseDown(with: event)
-            return
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        inactiveDragContext = InactiveWebDragContext(
-            startOrigin: window.frame.origin,
-            startPoint: window.convertPoint(toScreen: event.locationInWindow),
-            clickPoint: event.locationInWindow,
-            didMove: false
-        )
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let inactiveDragContext,
-              let window
-        else {
-            super.mouseDragged(with: event)
-            return
-        }
-
-        let nextPoint = window.convertPoint(toScreen: event.locationInWindow)
-        let deltaX = nextPoint.x - inactiveDragContext.startPoint.x
-        let deltaY = nextPoint.y - inactiveDragContext.startPoint.y
-
-        if inactiveDragContext.didMove || hypot(deltaX, deltaY) > 2 {
-            self.inactiveDragContext?.didMove = true
-            window.setFrameOrigin(
-                NSPoint(
-                    x: inactiveDragContext.startOrigin.x + deltaX,
-                    y: inactiveDragContext.startOrigin.y + deltaY
-                )
-            )
-        }
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard let inactiveDragContext else {
-            super.mouseUp(with: event)
-            return
-        }
-
-        self.inactiveDragContext = nil
-        guard !inactiveDragContext.didMove else { return }
-
-        onRequestEditorFocus?(inactiveDragContext.clickPoint)
-    }
-
-    func performMemoPaste(_ sender: Any?) -> Bool {
-        onRequestPaste?() == true
-    }
-
-    @objc func paste(_ sender: Any?) {
-        _ = performMemoPaste(sender)
-    }
-
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = KeyboardShortcuts.normalizedModifiers(for: event)
-        if flags == .command,
-           event.keyCode == KeyboardShortcuts.KeyCode.v,
-           performMemoPaste(nil) {
-            return true
-        }
-
         if flags == .command,
            event.keyCode == KeyboardShortcuts.KeyCode.a,
            onRequestEditorCommand?("selectAll") == true {
             return true
         }
-
         return super.performKeyEquivalent(with: event)
     }
-}
-
-private struct InactiveWebDragContext {
-    let startOrigin: NSPoint
-    let startPoint: NSPoint
-    let clickPoint: NSPoint
-    var didMove: Bool
 }

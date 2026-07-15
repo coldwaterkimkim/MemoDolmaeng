@@ -3,17 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:editor": "esbuild web-editor/src/editor.js --bundle --format=iife --global-name=MemoMarkdownEditor --outfile=Sources/MemoDolmaeng/Resources/MarkdownEditor/editor.bundle.js",
+    "build:editor": "esbuild web-editor/src/editor.js --bundle --format=iife --global-name=MemoMarkdownEditor --define:__VUE_OPTIONS_API__=false --define:__VUE_PROD_DEVTOOLS__=false --define:__VUE_PROD_HYDRATION_MISMATCH_DETAILS__=false --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --asset-names=fonts/[name]-[hash] --outfile=Sources/MemoDolmaeng/Resources/MarkdownEditor/editor.bundle.js",
     "test:editor": "node --test web-editor/test/*.test.js"
   },
   "dependencies": {
-    "@codemirror/commands": "^6.10.0",
-    "@codemirror/lang-markdown": "^6.3.5",
-    "@codemirror/language": "^6.11.3",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.38.1",
-    "turndown": "^7.2.4",
-    "turndown-plugin-gfm": "^1.0.2"
+    "@milkdown/crepe": "7.21.2",
+    "@milkdown/kit": "7.21.2"
   },
   "devDependencies": {
     "esbuild": "^0.25.11"

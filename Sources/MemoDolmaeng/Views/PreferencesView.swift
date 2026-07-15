@@ -2,96 +2,189 @@ import AppKit
 import SwiftUI
 
 struct PreferencesView: View {
-    @ObservedObject var preferences: AppPreferences
+    @ObservedObject var workspace: EdgeWorkspaceController
+    @ObservedObject var edgePreferences: EdgePreferences
+    @ObservedObject var editorPreferences: AppPreferences
+    @State private var selectedNoteID: UUID?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                section("Text") {
-                    ColorPicker("Fill", selection: colorBinding(\.textColor))
-                    ColorPicker("Stroke", selection: colorBinding(\.strokeColor))
-                    slider("Stroke Weight", value: $preferences.strokeWidth, range: 0...2, step: 0.05)
-                    slider("Body Size", value: $preferences.bodyFontSize, range: 8...24, step: 0.5)
-                    slider("Heading 1", value: $preferences.heading1FontSize, range: 12...36, step: 0.5)
-                    slider("Heading 2", value: $preferences.heading2FontSize, range: 10...30, step: 0.5)
-                    slider("Heading 3", value: $preferences.heading3FontSize, range: 9...26, step: 0.5)
-                    slider("Code Size", value: $preferences.codeFontSize, range: 8...24, step: 0.5)
-                }
+        TabView {
+            commonSettings
+                .tabItem { Label("공통", systemImage: "gearshape") }
+            noteSettings
+                .tabItem { Label("메모별", systemImage: "note.text") }
+        }
+        .padding(18)
+        .frame(width: 540, height: 430)
+        .onAppear {
+            if selectedNoteID == nil { selectedNoteID = workspace.activeNotes.first?.id }
+        }
+    }
 
-                section("Spacing") {
-                    slider("Paragraph", value: $preferences.paragraphSpacing, range: 0...10, step: 0.5)
-                    slider("Heading 1 Gap", value: $preferences.heading1Spacing, range: 0...16, step: 0.5)
-                    slider("Heading 2 Gap", value: $preferences.heading2Spacing, range: 0...14, step: 0.5)
-                    slider("Heading 3 Gap", value: $preferences.heading3Spacing, range: 0...12, step: 0.5)
-                    slider("Code Block Gap", value: $preferences.codeBlockSpacing, range: 0...12, step: 0.5)
-                    slider("List Indent", value: $preferences.listIndent, range: 0...40, step: 1)
-                    slider("Quote Indent", value: $preferences.quoteIndent, range: 0...40, step: 1)
+    private var commonSettings: some View {
+        Form {
+            Picker("모니터", selection: displayBinding) {
+                Text("마우스가 있는 화면").tag(UInt32?.none)
+                ForEach(Array(NSScreen.screens.enumerated()), id: \.offset) { index, screen in
+                    Text("디스플레이 \(index + 1)").tag(screen.memoDisplayID as UInt32?)
                 }
+            }
 
-                section("Window") {
-                    slider("Width", value: $preferences.windowWidth, range: 220...520, step: 5)
-                    slider("Min Height", value: $preferences.minimumHeight, range: 24...120, step: 1)
-                    slider("Max Auto Height", value: $preferences.maximumAutomaticHeight, range: 180...900, step: 10)
-                    slider("Horizontal Padding", value: $preferences.horizontalInset, range: 0...40, step: 1)
-                    slider("Vertical Padding", value: $preferences.verticalInset, range: 0...40, step: 1)
-                    slider("Drag Strip", value: $preferences.dragHandleHeight, range: 0...28, step: 1)
-                    slider("Translucent Alpha", value: $preferences.translucentAlpha, range: 0...1, step: 0.01)
-                    ColorPicker("Edge Stroke", selection: colorBinding(\.windowEdgeStrokeColor))
-                    slider("Edge Stroke Weight", value: $preferences.windowEdgeStrokeWidth, range: 0...4, step: 0.1)
-                    slider("Edge Stroke Opacity", value: $preferences.windowEdgeStrokeOpacity, range: 0...1, step: 0.01)
-                    Toggle("Shadow", isOn: $preferences.windowShadowEnabled)
+            Picker("기본 가장자리", selection: $edgePreferences.defaultEdge) {
+                ForEach(EdgeDock.allCases) { edge in Text(edge.title).tag(edge) }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("새 메모 기본 비율", selection: $edgePreferences.defaultAspectRawValue) {
+                Text("1:1").tag(MemoAspectRatio.square.rawValue)
+                Text("3:4").tag(MemoAspectRatio.portrait.rawValue)
+            }
+            .pickerStyle(.segmented)
+
+            sliderRow("새 메모 투명도", value: $edgePreferences.defaultOpacity, range: 0.4...1, suffix: "%")
+            sliderRow("인덱스 표시 대기", value: $edgePreferences.revealDelay, range: 0...1, suffix: "초")
+            sliderRow("인덱스 숨김 지연", value: $edgePreferences.hideDelay, range: 0.05...2, suffix: "초")
+            sliderRow("PEEK 접힘 지연", value: $edgePreferences.peekDelay, range: 0.1...2, suffix: "초")
+            fontSizeRow
+
+            LabeledContent("전역 단축키") {
+                Text("⌘⇧M")
+                    .monospaced()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var noteSettings: some View {
+        Form {
+            Picker("활성 메모", selection: selectedNoteBinding) {
+                ForEach(workspace.activeNotes) { note in
+                    Text(note.title).tag(note.id as UUID?)
                 }
+            }
 
-                HStack {
-                    Spacer()
-                    Button("Reset") {
-                        preferences.resetToDefaults()
+            if let note = selectedNote {
+                TextField("인덱스 제목", text: Binding(
+                    get: { note.title },
+                    set: { workspace.updateTitle(noteID: note.id, title: $0) }
+                ))
+
+                LabeledContent("현재 배치") {
+                    HStack {
+                        Text(workspace.edge(for: note.id)?.title ?? "기본")
+                            .foregroundStyle(.secondary)
+                        Button {
+                            workspace.attachToDefaultGroup(noteID: note.id)
+                        } label: {
+                            Label("기본 그룹에 붙이기", systemImage: "rectangle.3.group")
+                        }
                     }
                 }
+
+                Picker("메모 비율", selection: Binding(
+                    get: { note.aspectRatio },
+                    set: { workspace.updateAppearance(noteID: note.id, aspectRatio: $0) }
+                )) {
+                    Text("1:1").tag(MemoAspectRatio.square)
+                    Text("3:4").tag(MemoAspectRatio.portrait)
+                }
+                .pickerStyle(.segmented)
+
+                LabeledContent("배경색") {
+                    HStack(spacing: 8) {
+                        ForEach(NoteColor.allCases, id: \.rawValue) { color in
+                            Button {
+                                workspace.updateAppearance(noteID: note.id, color: color)
+                            } label: {
+                                Circle()
+                                    .fill(color.bodyColor)
+                                    .overlay(Circle().stroke(note.color == color ? Color.accentColor : .secondary.opacity(0.35), lineWidth: note.color == color ? 3 : 1))
+                                    .frame(width: 22, height: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .help(color.title)
+                        }
+                    }
+                }
+
+                ColorPicker("글자색", selection: textColorBinding(note), supportsOpacity: false)
+                sliderRow(
+                    "투명도",
+                    value: Binding(
+                        get: { note.opacity },
+                        set: { workspace.updateAppearance(noteID: note.id, opacity: $0) }
+                    ),
+                    range: 0.4...1,
+                    suffix: "%"
+                )
+            } else {
+                ContentUnavailableView("활성 메모가 없어", systemImage: "note.text")
             }
-            .padding(22)
         }
-        .frame(width: 520, height: 620)
+        .formStyle(.grouped)
     }
 
-    private func section<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 8) {
-                content()
-            }
-        }
+    private var selectedNote: MemoNote? {
+        guard let selectedNoteID else { return nil }
+        return workspace.note(withID: selectedNoteID)
     }
 
-    private func slider(
-        _ title: String,
-        value: Binding<CGFloat>,
-        range: ClosedRange<Double>,
-        step: Double
-    ) -> some View {
-        let doubleValue = Binding<Double>(
-            get: { Double(value.wrappedValue) },
-            set: { value.wrappedValue = CGFloat($0) }
-        )
-
-        return HStack(spacing: 10) {
-            Text(title)
-                .frame(width: 140, alignment: .leading)
-            Slider(value: doubleValue, in: range, step: step)
-            Text(String(format: "%.2g", Double(value.wrappedValue)))
-                .monospacedDigit()
-                .frame(width: 46, alignment: .trailing)
-        }
+    private var displayBinding: Binding<UInt32?> {
+        Binding(get: { edgePreferences.targetDisplayID }, set: { edgePreferences.targetDisplayID = $0 })
     }
 
-    private func colorBinding(_ keyPath: ReferenceWritableKeyPath<AppPreferences, NSColor>) -> Binding<Color> {
+    private var selectedNoteBinding: Binding<UUID?> {
         Binding(
-            get: { Color(nsColor: preferences[keyPath: keyPath]) },
-            set: { preferences[keyPath: keyPath] = NSColor($0) }
+            get: { selectedNoteID ?? workspace.activeNotes.first?.id },
+            set: { selectedNoteID = $0 }
+        )
+    }
+
+    private var fontSizeRow: some View {
+        let value = Binding<Double>(
+            get: { Double(editorPreferences.bodyFontSize) },
+            set: { editorPreferences.bodyFontSize = CGFloat($0) }
+        )
+        return sliderRow("편집기 글꼴", value: value, range: 9...22, suffix: "pt")
+    }
+
+    private func sliderRow(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        suffix: String
+    ) -> some View {
+        LabeledContent(title) {
+            HStack {
+                Slider(value: value, in: range)
+                    .frame(width: 230)
+                Text(formatted(value.wrappedValue, range: range, suffix: suffix))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 54, alignment: .trailing)
+            }
+        }
+    }
+
+    private func formatted(_ value: Double, range: ClosedRange<Double>, suffix: String) -> String {
+        if suffix == "%" { return "\(Int((value * 100).rounded()))%" }
+        return String(format: "%.1f%@", value, suffix)
+    }
+
+    private func textColorBinding(_ note: MemoNote) -> Binding<Color> {
+        Binding(
+            get: { Color(nsColor: NSColor.memoColor(hex: note.textColorHex) ?? .labelColor) },
+            set: { color in
+                let converted = NSColor(color).usingColorSpace(.sRGB) ?? NSColor(color)
+                let hex = String(
+                    format: "#%02X%02X%02X",
+                    Int(converted.redComponent * 255),
+                    Int(converted.greenComponent * 255),
+                    Int(converted.blueComponent * 255)
+                )
+                workspace.updateAppearance(noteID: note.id, textColorHex: hex)
+            }
         )
     }
 }
