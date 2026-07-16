@@ -7,12 +7,9 @@ struct UnifiedEdgeMemoSurfaceView: View {
 
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
+    let isIce: Bool
     let onRequestIce: () -> Void
-    let onRequestFold: () -> Void
     let onPointerChange: (Bool) -> Void
-    let onTitleDragBegan: (NSPoint) -> Void
-    let onTitleDragChanged: (NSPoint) -> Void
-    let onTitleDragEnded: (NSPoint) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -25,11 +22,8 @@ struct UnifiedEdgeMemoSurfaceView: View {
                 expansionProgress: expansionProgress,
                 assetRootURL: assetRootURL,
                 onImageUpload: onImageUpload,
-                onRequestIce: onRequestIce,
-                onRequestFold: onRequestFold,
-                onTitleDragBegan: onTitleDragBegan,
-                onTitleDragChanged: onTitleDragChanged,
-                onTitleDragEnded: onTitleDragEnded
+                isIce: isIce,
+                onRequestIce: onRequestIce
             )
         }
         .onHover(perform: onPointerChange)
@@ -38,16 +32,12 @@ struct UnifiedEdgeMemoSurfaceView: View {
 
 struct EdgeMemoPanelView: View {
     @ObservedObject var viewModel: NoteEditorViewModel
-    @State private var isDraggingTitle = false
 
     let expansionProgress: CGFloat
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
+    let isIce: Bool
     let onRequestIce: () -> Void
-    let onRequestFold: () -> Void
-    let onTitleDragBegan: (NSPoint) -> Void
-    let onTitleDragChanged: (NSPoint) -> Void
-    let onTitleDragEnded: (NSPoint) -> Void
 
     var body: some View {
         let textColor = Color(nsColor: viewModel.textColor)
@@ -99,8 +89,9 @@ struct EdgeMemoPanelView: View {
                 .padding(.horizontal, 7)
                 .opacity(compactTitleOpacity)
                 .help(viewModel.title)
+                .allowsHitTesting(false)
 
-            HStack(spacing: 6) {
+            if isIce {
                 TextField(
                     "제목",
                     text: Binding(
@@ -113,31 +104,26 @@ struct EdgeMemoPanelView: View {
                 .foregroundStyle(textColor)
                 .lineLimit(1)
                 .contentShape(Rectangle())
-                .simultaneousGesture(TapGesture().onEnded(onRequestIce))
-
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(textColor.opacity(0.48))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-                    .gesture(titleDragGesture)
-                    .help("메모 이동")
-                    .accessibilityLabel("메모 이동")
-
-                Button(action: onRequestFold) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(textColor.opacity(0.72))
-                        .frame(width: 24, height: 24)
+                .padding(.horizontal, 10)
+                .opacity(expandedTitleOpacity)
+                .allowsHitTesting(expansionProgress > 0.96)
+            } else {
+                Button(action: onRequestIce) {
+                    Text(viewModel.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(textColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("메모 접기")
-                .accessibilityLabel("메모 접기")
+                .padding(.horizontal, 10)
+                .opacity(expandedTitleOpacity)
+                .allowsHitTesting(expansionProgress > 0.96)
+                .help("클릭해서 ICE로 고정")
+                .accessibilityLabel("\(viewModel.title), ICE로 고정")
             }
-            .padding(.horizontal, 10)
-            .opacity(expandedTitleOpacity)
-            .allowsHitTesting(expansionProgress > 0.96)
         }
         .frame(height: interpolatedTitleBarHeight)
         .background(textColor.opacity(0.035 * expansionProgress))
@@ -161,20 +147,4 @@ struct EdgeMemoPanelView: View {
         Double(min(1, max(0, (expansionProgress - 0.16) / 0.84)))
     }
 
-    private var titleDragGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
-            .onChanged { _ in
-                let point = NSEvent.mouseLocation
-                if !isDraggingTitle {
-                    isDraggingTitle = true
-                    onTitleDragBegan(point)
-                }
-                onTitleDragChanged(point)
-            }
-            .onEnded { _ in
-                guard isDraggingTitle else { return }
-                isDraggingTitle = false
-                onTitleDragEnded(NSEvent.mouseLocation)
-            }
-    }
 }

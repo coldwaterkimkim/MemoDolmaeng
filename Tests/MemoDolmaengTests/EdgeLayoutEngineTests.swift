@@ -29,7 +29,7 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertTrue(frames.allSatisfy { $0.width > $0.height })
         XCTAssertEqual(frames[0].minY, frames[1].maxY, accuracy: 0.001)
         XCTAssertEqual(frames[1].minY, frames[2].maxY, accuracy: 0.001)
-        XCTAssertEqual(snapshot.groupFrames[group.id]?.midY ?? 0, visible.midY, accuracy: 0.001)
+        XCTAssertEqual(snapshot.groupFrames[group.id]?.maxY ?? 0, visible.maxY, accuracy: 0.001)
     }
 
     func testSideHandleExpandsForFullDisplayTitle() throws {
@@ -49,7 +49,7 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertEqual(frame.height, EdgeLayoutEngine.sideHandleHeight, accuracy: 0.001)
     }
 
-    func testManualGroupKeepsPositionAndDefaultGroupMovesOutOfCollision() {
+    func testLegacyGroupsOnOneEdgeCollapseIntoOneTopAnchoredRail() {
         let manual = MemoEdgeGroup(edge: .right, normalizedCenter: 0.5, createdAt: Date(timeIntervalSince1970: 1))
         let defaultGroup = MemoEdgeGroup(edge: .right, normalizedCenter: 0.5, createdAt: Date(timeIntervalSince1970: 2))
         let manualNote = note(title: "수동", groupID: manual.id, order: 0)
@@ -65,8 +65,8 @@ final class EdgeLayoutEngineTests: XCTestCase {
         let manualFrame = try! XCTUnwrap(snapshot.groupFrames[manual.id])
         let defaultFrame = try! XCTUnwrap(snapshot.groupFrames[defaultGroup.id])
 
-        XCTAssertEqual(manualFrame.midY, visible.midY, accuracy: 0.001)
-        XCTAssertFalse(manualFrame.insetBy(dx: 0, dy: -EdgeLayoutEngine.groupGap).intersects(defaultFrame))
+        XCTAssertEqual(manualFrame, defaultFrame)
+        XCTAssertEqual(manualFrame.maxY, visible.maxY, accuracy: 0.001)
     }
 
     func testTopHandlesSitImmediatelyBelowMenuBarAndPanelOpensDown() throws {
@@ -339,7 +339,7 @@ final class EdgeLayoutEngineTests: XCTestCase {
         )
     }
 
-    func testTenManualGroupsCompressGloballyWithoutOverlapOnSmallScreen() {
+    func testTenLegacyGroupsBecomeOneCompactNonOverlappingRailOnSmallScreen() {
         let notesAndGroups = (0..<10).map { index -> (MemoNote, MemoEdgeGroup) in
             let timestamp = Date(timeIntervalSince1970: Double(index))
             let group = MemoEdgeGroup(
@@ -374,11 +374,30 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(frames.first?.minY ?? 0, smallVisibleFrame.minY)
         XCTAssertLessThanOrEqual(frames.last?.maxY ?? .infinity, smallVisibleFrame.maxY)
         for pair in zip(frames, frames.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(
-                pair.1.minY - pair.0.maxY,
-                EdgeLayoutEngine.groupGap - 0.01
+            XCTAssertGreaterThanOrEqual(pair.1.minY - pair.0.maxY, -0.01)
+        }
+    }
+
+    func testIceStackUsesThreeEqualNonOverlappingSlotsBelowIndexRail() {
+        let indexRail = CGRect(x: screen.minX, y: 690, width: 120, height: 130)
+        let frames = (0..<3).map { slot in
+            EdgeLayoutEngine.icePanelFrame(
+                edge: .left,
+                slot: slot,
+                indexGroupFrame: indexRail,
+                screenFrame: screen,
+                visibleFrame: visible,
+                storedWidth: 420
             )
         }
+
+        XCTAssertEqual(frames[0].maxY, indexRail.minY - EdgeLayoutEngine.groupGap, accuracy: 0.001)
+        XCTAssertEqual(frames[0].height, frames[1].height, accuracy: 1)
+        XCTAssertEqual(frames[1].height, frames[2].height, accuracy: 1)
+        XCTAssertEqual(frames[0].minY, frames[1].maxY, accuracy: 0.001)
+        XCTAssertEqual(frames[1].minY, frames[2].maxY, accuracy: 0.001)
+        XCTAssertEqual(frames[2].minY, visible.minY, accuracy: 0.001)
+        XCTAssertTrue(frames.allSatisfy { $0.width == 420 && $0.minX == screen.minX })
     }
 
     private func note(

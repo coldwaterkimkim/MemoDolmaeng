@@ -4,15 +4,15 @@ import QuartzCore
 import SwiftUI
 
 @MainActor
-final class MemoPanelController: NSWindowController {
+final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private let assetRootURL: URL
     private var hostingController: NSHostingController<UnifiedEdgeMemoSurfaceView>?
     private var viewModel: NoteEditorViewModel?
     private var currentBodyFrame: CGRect = .zero
     private var currentHandleFrame: CGRect = .zero
+    private var currentIsIce = false
     private var shouldBeVisible = false
     private var visibilityGeneration = 0
-    private var titleDragOffset: NSPoint?
     private var isUserResizing = false
     private var suppressResizePersistence = false
     private var resizeSuppressionGeneration = 0
@@ -25,9 +25,6 @@ final class MemoPanelController: NSWindowController {
     var onCycle: ((Int) -> Void)?
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
-    var onDragBegan: (() -> Void)?
-    var onDragChanged: ((NSPoint) -> Void)?
-    var onDragFinished: ((NSPoint) -> Void)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -51,6 +48,7 @@ final class MemoPanelController: NSWindowController {
         panel.title = "메모돌맹 메모"
 
         super.init(window: panel)
+        panel.delegate = self
 
         panel.onFold = { [weak self] in self?.requestFold() }
         panel.onCycle = { [weak self] direction in self?.onCycle?(direction) }
@@ -81,13 +79,14 @@ final class MemoPanelController: NSWindowController {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        isIce _: Bool,
+        isIce: Bool,
         focusEditor shouldFocusEditor: Bool = true,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
     ) {
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
+        currentIsIce = isIce
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
         let isSwitchingNotes = wasVisible && previousNoteID != nil && previousNoteID != note.id
@@ -155,7 +154,8 @@ final class MemoPanelController: NSWindowController {
         }
     }
 
-    func refresh(note: MemoNote, isIce _: Bool) {
+    func refresh(note: MemoNote, isIce: Bool) {
+        currentIsIce = isIce
         viewModel?.sync(note: note)
         updateRootView()
     }
@@ -177,9 +177,11 @@ final class MemoPanelController: NSWindowController {
     }
 
     func fold(
+        to handleFrame: CGRect? = nil,
         beforeOrderOut: (() -> Void)? = nil,
         completion: (() -> Void)? = nil
     ) {
+        if let handleFrame { currentHandleFrame = handleFrame }
         shouldBeVisible = false
         visibilityGeneration += 1
         let generation = visibilityGeneration
@@ -230,11 +232,19 @@ final class MemoPanelController: NSWindowController {
         else { return }
         let size = CGSize(
             width: min(MemoPanelSize.maximum.width, max(MemoPanelSize.minimum.width, window.frame.width)),
-            height: min(MemoPanelSize.maximum.height, max(MemoPanelSize.minimum.height, window.frame.height))
+            height: currentBodyFrame.height
         )
         currentBodyFrame = window.frame
         currentBodyFrame.size = size
         onResize?(noteID, size)
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard shouldBeVisible, currentBodyFrame.height > 0 else { return frameSize }
+        return NSSize(
+            width: min(MemoPanelSize.maximum.width, max(MemoPanelSize.minimum.width, frameSize.width)),
+            height: currentBodyFrame.height
+        )
     }
 
     private func prepareContentSwitchTransition() {
@@ -263,9 +273,12 @@ final class MemoPanelController: NSWindowController {
         guard let window else { return }
         window.minSize = CGSize(
             width: min(MemoPanelSize.minimum.width, currentBodyFrame.width),
-            height: min(MemoPanelSize.minimum.height, currentBodyFrame.height)
+            height: currentBodyFrame.height
         )
-        window.maxSize = MemoPanelSize.maximum
+        window.maxSize = CGSize(
+            width: MemoPanelSize.maximum.width,
+            height: currentBodyFrame.height
+        )
     }
 
     private func allowTransitionSizing() {
@@ -302,12 +315,9 @@ final class MemoPanelController: NSWindowController {
                 }
                 return try onImageUpload(noteID, data, originalName)
             },
+            isIce: currentIsIce,
             onRequestIce: { [weak self] in self?.onRequestIce?() },
-            onRequestFold: { [weak self] in self?.requestFold() },
-            onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) },
-            onTitleDragBegan: { [weak self] point in self?.beginTitleDrag(at: point) },
-            onTitleDragChanged: { [weak self] point in self?.continueTitleDrag(at: point) },
-            onTitleDragEnded: { [weak self] point in self?.finishTitleDrag(at: point) }
+            onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) }
         )
 
         if let hostingController {
@@ -328,30 +338,6 @@ final class MemoPanelController: NSWindowController {
         }
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(textView)
-    }
-
-    private func beginTitleDrag(at point: NSPoint) {
-        guard let window, window.isVisible else { return }
-        titleDragOffset = NSPoint(
-            x: point.x - window.frame.minX,
-            y: point.y - window.frame.minY
-        )
-        onDragBegan?()
-    }
-
-    private func continueTitleDrag(at point: NSPoint) {
-        guard let window, let titleDragOffset else { return }
-        window.setFrameOrigin(NSPoint(
-            x: point.x - titleDragOffset.x,
-            y: point.y - titleDragOffset.y
-        ))
-        onDragChanged?(point)
-    }
-
-    private func finishTitleDrag(at point: NSPoint) {
-        guard titleDragOffset != nil else { return }
-        titleDragOffset = nil
-        onDragFinished?(point)
     }
 
     private func findTextView(in view: NSView) -> NSTextView? {

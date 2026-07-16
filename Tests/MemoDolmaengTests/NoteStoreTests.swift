@@ -38,7 +38,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertFalse(store.notes.contains(where: { !MemoNote.hasMeaningfulContent($0.content) }))
 
         let envelope = try fixture.readEnvelope()
-        XCTAssertEqual(envelope.schemaVersion, 3)
+        XCTAssertEqual(envelope.schemaVersion, 4)
         XCTAssertEqual(envelope.edgeGroups.count, 1)
     }
 
@@ -70,6 +70,52 @@ final class NoteStoreTests: XCTestCase {
 
         _ = try NoteStore(persistenceURL: fixture.notesURL)
         XCTAssertEqual(try fixture.backups().count, 1, "v3 reload must not create another migration backup")
+    }
+
+    func testV3MigrationFlattensEachEdgeAndPreservesVisualOrderAndWidth() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let upper = MemoEdgeGroup(
+            edge: .right,
+            normalizedCenter: 0.8,
+            createdAt: Date(timeIntervalSince1970: 1)
+        )
+        let lower = MemoEdgeGroup(
+            edge: .right,
+            normalizedCenter: 0.2,
+            createdAt: Date(timeIntervalSince1970: 2)
+        )
+        let upperNote = MemoNote(
+            title: "위",
+            content: "위",
+            placement: MemoPlacement(groupID: upper.id, order: 0),
+            panelSize: MemoPanelSize(width: 510, height: 420)
+        )
+        let lowerNote = MemoNote(
+            title: "아래",
+            content: "아래",
+            placement: MemoPlacement(groupID: lower.id, order: 0)
+        )
+        try fixture.writeEnvelope(
+            NoteStoreEnvelope(
+                schemaVersion: 3,
+                notes: [lowerNote, upperNote],
+                edgeGroups: [lower, upper],
+                defaultGroupID: upper.id
+            )
+        )
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+
+        XCTAssertEqual(ordered.map(\.title), ["위", "아래"])
+        XCTAssertEqual(store.edgeGroups.filter { $0.edge == .right }.count, 1)
+        XCTAssertEqual(store.note(withID: upperNote.id)?.panelSize?.cgSize.width, 510)
+        XCTAssertEqual(try fixture.readEnvelope().schemaVersion, 4)
+        XCTAssertTrue(try fixture.backups().contains {
+            $0.lastPathComponent.hasPrefix("notes-pre-edge-stack-v4-")
+        })
     }
 
     func testMigrationBackupFailureThrowsWithoutOverwritingSource() throws {
@@ -168,7 +214,7 @@ final class NoteStoreTests: XCTestCase {
             aspectRatio: .portrait,
             opacity: 0.6
         )
-        store.updatePanelSize(noteID: note.id, size: CGSize(width: 512, height: 388))
+        store.updatePanelWidth(noteID: note.id, width: 512)
 
         let reloaded = try NoteStore(persistenceURL: fixture.notesURL)
         let saved = try XCTUnwrap(reloaded.note(withID: note.id))
@@ -178,7 +224,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertEqual(saved.color, .purple)
         XCTAssertEqual(saved.textColorHex, "#123456")
         XCTAssertEqual(saved.panelSize?.cgSize.width ?? 0, 512, accuracy: 0.001)
-        XCTAssertEqual(saved.panelSize?.cgSize.height ?? 0, 388, accuracy: 0.001)
+        XCTAssertEqual(saved.panelSize?.cgSize.height ?? 0, MemoPanelSize.minimum.height, accuracy: 0.001)
         XCTAssertTrue(saved.isTitleExplicit)
 
         let json = try XCTUnwrap(
@@ -193,18 +239,18 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertNotNil(json["defaultGroupID"])
     }
 
-    func testChoosingAspectRatioResetsManualPanelSize() throws {
+    func testLegacyAspectRatioChangeKeepsManualIceWidth() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }
 
         let store = try NoteStore(persistenceURL: fixture.notesURL)
         let note = try store.createNote(content: "크기 재설정")
-        store.updatePanelSize(noteID: note.id, size: CGSize(width: 520, height: 390))
+        store.updatePanelWidth(noteID: note.id, width: 520)
         XCTAssertNotNil(store.note(withID: note.id)?.panelSize)
 
         store.updateAppearance(noteID: note.id, aspectRatio: .square)
 
-        XCTAssertNil(store.note(withID: note.id)?.panelSize)
+        XCTAssertEqual(store.note(withID: note.id)?.panelSize?.cgSize.width, 520)
         XCTAssertEqual(store.note(withID: note.id)?.aspectRatio, .square)
     }
 
@@ -219,7 +265,8 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertNotEqual(manualID, store.defaultGroupID)
         XCTAssertTrue(store.attachToDefaultGroup(noteID: note.id))
         XCTAssertEqual(store.note(withID: note.id)?.placement.groupID, store.defaultGroupID)
-        XCTAssertNil(store.group(withID: manualID))
+        XCTAssertNotNil(store.group(withID: manualID))
+        XCTAssertLessThanOrEqual(store.edgeGroups.filter { $0.edge == .left }.count, 1)
     }
 
     func testTitleDerivationAndMeaningfulContentDetection() {

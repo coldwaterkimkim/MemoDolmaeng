@@ -28,6 +28,7 @@ final class EdgeWorkspaceController: ObservableObject {
     private var handleControllers: [UUID: EdgeHandlePanelController] = [:]
     private var controlControllers: [EdgeDock: EdgeControlPanelController] = [:]
     private var layoutSnapshot: EdgeLayoutSnapshot = .empty
+    private var restingLayoutSnapshot: EdgeLayoutSnapshot = .empty
     private var pointerInsideHandles: Set<UUID> = []
     private var pointerInsideHotZones: Set<EdgeDock> = []
     private var pointerInsideControls: Set<EdgeDock> = []
@@ -128,15 +129,18 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
 
-        let defaultAspect = MemoAspectRatio(rawValue: preferences.defaultAspectRawValue) ?? .square
         let timestamp = Date()
-        let defaultGroup = store.edgeGroups.first { $0.id == store.defaultGroupID }
+        let edgeGroup = store.group(for: edge)
         let placementGroupID: UUID
-        if defaultGroup?.edge == edge {
+        if let edgeGroup {
             draftGroup = nil
-            placementGroupID = store.defaultGroupID
+            placementGroupID = edgeGroup.id
         } else {
-            let group = MemoEdgeGroup(edge: edge, normalizedCenter: 0.5, createdAt: timestamp)
+            let group = MemoEdgeGroup(
+                edge: edge,
+                normalizedCenter: edge == .top ? 0.5 : 1,
+                createdAt: timestamp
+            )
             draftGroup = group
             placementGroupID = group.id
         }
@@ -151,7 +155,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 groupID: placementGroupID,
                 order: nextOrder(in: placementGroupID)
             ),
-            aspectRatio: defaultAspect,
+            aspectRatio: .portrait,
             opacity: preferences.defaultOpacity,
             createdAt: timestamp,
             updatedAt: timestamp
@@ -202,13 +206,14 @@ final class EdgeWorkspaceController: ObservableObject {
             state: presentationState,
             action: .close(closingID)
         )
+        refreshLayout()
         if pointerInsideHotZones.isEmpty,
            pointerInsideHandles.isEmpty {
             indexVisibility = .transitioning(closingID)
         }
         refreshHandleSelection()
         let controller = panelControllers[closingID]
-        controller?.fold(beforeOrderOut: { [weak self] in
+        controller?.fold(to: layoutSnapshot.handleFrames[closingID], beforeOrderOut: { [weak self] in
             self?.prepareIndexHandoff(noteID: closingID)
         }) { [weak self, weak controller] in
             guard let self else { return }
@@ -336,10 +341,7 @@ final class EdgeWorkspaceController: ObservableObject {
         if var draft = draftNote, draft.id == noteID {
             if let color { draft.color = color }
             if let textColorHex { draft.textColorHex = textColorHex }
-            if let aspectRatio {
-                draft.aspectRatio = aspectRatio
-                draft.panelSize = nil
-            }
+            if let aspectRatio { draft.aspectRatio = aspectRatio }
             if let opacity { draft.opacity = opacity }
             draftNote = draft
             reloadNotes()
@@ -399,28 +401,28 @@ final class EdgeWorkspaceController: ObservableObject {
             focusIce(noteID: noteID)
             return
         }
+        guard let edge = edge(for: noteID) else { return }
+        if ice, !presentationState.isIce(noteID) {
+            let sameEdge = presentationState.iceNoteIDs.filter { self.edge(for: $0) == edge }
+            if sameEdge.count >= EdgeLayoutEngine.maxIcePerEdge,
+               let oldest = sameEdge.first {
+                closeMemo(noteID: oldest)
+            }
+        }
         collapsingNoteIDs.remove(noteID)
         foldTask?.cancel()
         foldTask = nil
         refreshLayoutSnapshot()
 
-        guard let handleFrame = layoutSnapshot.handleFrames[noteID],
-              let edge = edge(for: noteID)
-        else { return }
+        guard let handleFrame = layoutSnapshot.handleFrames[noteID] else { return }
         let screen = targetScreen()
-        let panelFrame = EdgeLayoutEngine.panelFrame(
-            adjacentTo: handleFrame,
-            screenFrame: screen.frame,
-            visibleFrame: screen.visibleFrame,
-            edge: edge,
-            aspectRatio: note.aspectRatio.value,
-            panelSize: note.panelSize
-        )
 
         presentationState = EdgePresentationReducer.reduce(
             state: presentationState,
             action: ice ? .doubleClick(noteID) : .hover(noteID)
         )
+        refreshLayoutSnapshot()
+        let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
         preferences.lastNoteID = noteID
         panelController(for: noteID).show(
             note: note,
@@ -440,7 +442,7 @@ final class EdgeWorkspaceController: ObservableObject {
         if panelFrame.contains(NSEvent.mouseLocation) {
             pointerInsidePanels.insert(noteID)
         }
-        refreshHandleSelection()
+        refreshLayout()
         onPresentationChange?(true)
         updatePeekDismissal()
     }
@@ -479,13 +481,6 @@ final class EdgeWorkspaceController: ObservableObject {
         controller.onResize = { [weak self] requestedNoteID, size in
             self?.handlePanelResize(noteID: requestedNoteID, size: size)
         }
-        controller.onDragBegan = { [weak self] in self?.beginDrag(noteID: noteID) }
-        controller.onDragChanged = { [weak self] point in
-            self?.continueDrag(noteID: noteID, point: point)
-        }
-        controller.onDragFinished = { [weak self] point in
-            self?.finishDrag(noteID: noteID, point: point)
-        }
         panelControllers[noteID] = controller
         return controller
     }
@@ -508,12 +503,8 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func focusIce(noteID: UUID) {
         guard presentationState.isIce(noteID) else { return }
-        presentationState = EdgePresentationReducer.reduce(
-            state: presentationState,
-            action: .focus(noteID)
-        )
         preferences.lastNoteID = noteID
-        refreshHandleSelection()
+        panelControllers[noteID]?.window?.makeKeyAndOrderFront(nil)
     }
 
     private func handleContentChange(noteID: UUID, content: String) {
@@ -569,10 +560,11 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func handlePanelResize(noteID: UUID, size: CGSize) {
         if var draft = draftNote, draft.id == noteID {
-            draft.panelSize = MemoPanelSize(size)
+            let storedHeight = draft.panelSize?.cgSize.height ?? MemoPanelSize.minimum.height
+            draft.panelSize = MemoPanelSize(width: size.width, height: storedHeight)
             draftNote = draft
         } else {
-            store.updatePanelSize(noteID: noteID, size: size)
+            store.updatePanelWidth(noteID: noteID, width: size.width)
             if let error = store.lastPersistenceError { showPersistenceAlert(error) }
         }
         reloadNotes()
@@ -590,18 +582,14 @@ final class EdgeWorkspaceController: ObservableObject {
     private func repositionOpenPanel(noteID: UUID) {
         guard presentationState.isPresented(noteID),
               let note = note(withID: noteID),
-              let handleFrame = layoutSnapshot.handleFrames[noteID],
               let edge = edge(for: noteID)
         else { return }
+        guard let handleFrame = presentationState.isIce(noteID)
+            ? restingLayoutSnapshot.handleFrames[noteID]
+            : layoutSnapshot.handleFrames[noteID]
+        else { return }
         let screen = targetScreen()
-        let frame = EdgeLayoutEngine.panelFrame(
-            adjacentTo: handleFrame,
-            screenFrame: screen.frame,
-            visibleFrame: screen.visibleFrame,
-            edge: edge,
-            aspectRatio: note.aspectRatio.value,
-            panelSize: note.panelSize
-        )
+        let frame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
         panelControllers[noteID]?.reposition(
             frame: frame,
             handleFrame: handleFrame,
@@ -621,17 +609,13 @@ final class EdgeWorkspaceController: ObservableObject {
             .union(presentationState.peekNoteID.map { [$0] } ?? [])
         for noteID in presentedIDs {
             guard let note = note(withID: noteID),
-                  let handleFrame = layoutSnapshot.handleFrames[noteID],
                   let edge = edge(for: noteID)
             else { continue }
-            let panelFrame = EdgeLayoutEngine.panelFrame(
-                adjacentTo: handleFrame,
-                screenFrame: screen.frame,
-                visibleFrame: screen.visibleFrame,
-                edge: edge,
-                aspectRatio: note.aspectRatio.value,
-                panelSize: note.panelSize
-            )
+            guard let handleFrame = presentationState.isIce(noteID)
+                ? restingLayoutSnapshot.handleFrames[noteID]
+                : layoutSnapshot.handleFrames[noteID]
+            else { continue }
+            let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
             panelController(for: noteID).show(
                 note: note,
                 frame: panelFrame,
@@ -652,12 +636,52 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func refreshLayoutSnapshot() {
         let screen = targetScreen()
-        layoutSnapshot = EdgeLayoutEngine.layout(
+        restingLayoutSnapshot = EdgeLayoutEngine.layout(
             notes: activeNotes,
             groups: allGroups,
             defaultGroupID: store.defaultGroupID,
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame
+        )
+        layoutSnapshot = EdgeLayoutEngine.layout(
+            notes: activeNotes.filter { !presentationState.isIce($0.id) },
+            groups: allGroups,
+            defaultGroupID: store.defaultGroupID,
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame
+        )
+    }
+
+    private func panelFrame(
+        for note: MemoNote,
+        handleFrame: CGRect,
+        edge: EdgeDock,
+        screen: NSScreen
+    ) -> CGRect {
+        guard presentationState.isIce(note.id) else {
+            return EdgeLayoutEngine.panelFrame(
+                adjacentTo: handleFrame,
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame,
+                edge: edge,
+                aspectRatio: note.aspectRatio.value,
+                panelSize: note.panelSize
+            )
+        }
+        let newestFirst = Array(presentationState.iceNoteIDs
+            .filter { self.edge(for: $0) == edge }
+            .reversed())
+        let slot = newestFirst.firstIndex(of: note.id) ?? 0
+        let groupFrame = allGroups
+            .first { $0.edge == edge }
+            .flatMap { layoutSnapshot.groupFrames[$0.id] }
+        return EdgeLayoutEngine.icePanelFrame(
+            edge: edge,
+            slot: slot,
+            indexGroupFrame: groupFrame,
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            storedWidth: note.panelSize?.cgSize.width
         )
     }
 
@@ -896,15 +920,9 @@ final class EdgeWorkspaceController: ObservableObject {
         deleteDropZoneController.setHighlighted(overDeleteTarget)
         let targetDock = EdgeLayoutEngine.dock(at: point, screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
         hotZoneController.setDragging(true, targetEdge: overDeleteTarget ? nil : targetDock)
-        dropTargetGroupID = overDeleteTarget ? nil : targetDock.flatMap {
-            EdgeLayoutEngine.mergeTarget(
-                at: point,
-                edge: $0,
-                excluding: nil,
-                groups: allGroups,
-                snapshot: layoutSnapshot
-            )
-        }
+        dropTargetGroupID = overDeleteTarget
+            ? nil
+            : targetDock.flatMap { edge in allGroups.first { $0.edge == edge }?.id }
         for candidate in activeNotes where candidate.id != note.id {
             guard let frame = layoutSnapshot.handleFrames[candidate.id],
                   let candidateEdge = edge(for: candidate.id)
@@ -950,13 +968,7 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
 
-        let targetGroupID = EdgeLayoutEngine.mergeTarget(
-            at: point,
-            edge: edge,
-            excluding: nil,
-            groups: allGroups,
-            snapshot: layoutSnapshot
-        )
+        let targetGroupID = allGroups.first { $0.edge == edge }?.id
         let order = targetGroupID.map {
             EdgeLayoutEngine.insertionOrder(
                 at: point,
@@ -966,8 +978,6 @@ final class EdgeWorkspaceController: ObservableObject {
                 snapshot: layoutSnapshot
             )
         } ?? 0
-        let center = EdgeLayoutEngine.normalizedCenter(at: point, edge: edge, visibleFrame: screen.visibleFrame)
-
         if var draft = draftNote, draft.id == noteID {
             if let targetGroupID {
                 draft.placement = MemoPlacement(groupID: targetGroupID, order: order)
@@ -977,10 +987,10 @@ final class EdgeWorkspaceController: ObservableObject {
                 if let existing = draftGroup {
                     var updated = existing
                     updated.edge = edge
-                    updated.normalizedCenter = center
+                    updated.normalizedCenter = edge == .top ? 0.5 : 1
                     group = updated
                 } else {
-                    group = MemoEdgeGroup(edge: edge, normalizedCenter: center)
+                    group = MemoEdgeGroup(edge: edge, normalizedCenter: edge == .top ? 0.5 : 1)
                 }
                 draftGroup = group
                 draft.placement = MemoPlacement(groupID: group.id, order: 0)
@@ -989,7 +999,7 @@ final class EdgeWorkspaceController: ObservableObject {
         } else if !store.placeNote(
             noteID: noteID,
             edge: edge,
-            normalizedCenter: center,
+            normalizedCenter: edge == .top ? 0.5 : 1,
             mergeInto: targetGroupID,
             order: order
         ), let error = store.lastPersistenceError {

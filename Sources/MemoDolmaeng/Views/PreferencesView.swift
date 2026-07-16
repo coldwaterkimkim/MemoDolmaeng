@@ -35,12 +35,6 @@ struct PreferencesView: View {
             }
             .pickerStyle(.segmented)
 
-            Picker("새 메모 기본 비율", selection: $edgePreferences.defaultAspectRawValue) {
-                Text("1:1").tag(MemoAspectRatio.square.rawValue)
-                Text("3:4").tag(MemoAspectRatio.portrait.rawValue)
-            }
-            .pickerStyle(.segmented)
-
             sliderRow("새 메모 투명도", value: $edgePreferences.defaultOpacity, range: 0.4...1, suffix: "%")
             sliderRow("인덱스 표시 대기", value: $edgePreferences.revealDelay, range: 0...1, suffix: "초")
             sliderRow("인덱스 숨김 지연", value: $edgePreferences.hideDelay, range: 0.05...10, suffix: "초")
@@ -77,36 +71,16 @@ struct PreferencesView: View {
                         Button {
                             workspace.attachToDefaultGroup(noteID: note.id)
                         } label: {
-                            Label("기본 그룹에 붙이기", systemImage: "rectangle.3.group")
+                            Label("기본 엣지로 이동", systemImage: "rectangle.3.group")
                         }
                     }
                 }
 
-                Picker("크기 프리셋", selection: Binding(
-                    get: { note.aspectRatio },
-                    set: { workspace.updateAppearance(noteID: note.id, aspectRatio: $0) }
-                )) {
-                    Text("1:1").tag(MemoAspectRatio.square)
-                    Text("3:4").tag(MemoAspectRatio.portrait)
-                }
-                .pickerStyle(.segmented)
-
                 if let panelSize = note.panelSize {
-                    LabeledContent("수동 크기") {
-                        HStack(spacing: 8) {
-                            Text("\(Int(panelSize.width.rounded())) × \(Int(panelSize.height.rounded()))")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                            Button {
-                                workspace.updateAppearance(
-                                    noteID: note.id,
-                                    aspectRatio: note.aspectRatio
-                                )
-                            } label: {
-                                Image(systemName: "arrow.counterclockwise")
-                            }
-                            .help("프리셋 크기로 복원")
-                        }
+                    LabeledContent("ICE 폭") {
+                        Text("\(Int(panelSize.width.rounded())) pt")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
                     }
                 }
 

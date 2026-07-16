@@ -15,6 +15,7 @@ enum EdgeLayoutEngine {
     static let mergeDistance: CGFloat = 12
     static let edgeDropDistance: CGFloat = 28
     static let panelWidth: CGFloat = 340
+    static let maxIcePerEdge = 3
     static let panelRevealDuration: TimeInterval = 0.22
     static let panelHideDuration: TimeInterval = 0.18
     static let panelSwitchDuration: TimeInterval = 0.14
@@ -88,7 +89,7 @@ enum EdgeLayoutEngine {
     static func layout(
         notes: [MemoNote],
         groups: [MemoEdgeGroup],
-        defaultGroupID: UUID,
+        defaultGroupID _: UUID,
         screenFrame: CGRect,
         visibleFrame: CGRect
     ) -> EdgeLayoutSnapshot {
@@ -97,103 +98,91 @@ enum EdgeLayoutEngine {
 
         var handleFrames: [UUID: CGRect] = [:]
         var groupFrames: [UUID: CGRect] = [:]
+        let groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
 
         for edge in EdgeDock.allCases {
-            let edgeGroups = groups
-                .filter { group in
-                    group.edge == edge && activeNotes.contains { $0.placement.groupID == group.id }
-                }
+            let edgeNotes = activeNotes
+                .filter { groupsByID[$0.placement.groupID]?.edge == edge }
                 .sorted {
-                    if $0.id == defaultGroupID { return false }
-                    if $1.id == defaultGroupID { return true }
-                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-                    return $0.id.uuidString < $1.id.uuidString
+                    if $0.placement.order != $1.placement.order {
+                        return $0.placement.order < $1.placement.order
+                    }
+                    return $0.createdAt < $1.createdAt
                 }
-            let axisRange = usableAxisRange(edge: edge, visibleFrame: visibleFrame)
-            let edgeNotes = activeNotes.filter { note in
-                edgeGroups.contains { $0.id == note.placement.groupID }
+            guard !edgeNotes.isEmpty else { continue }
+
+            if edge == .top {
+                let requested = edgeNotes.map { topHandleWidth(for: $0.displayTitle) }
+                let widths = compressedLengths(requested, available: visibleFrame.width)
+                let totalWidth = widths.reduce(0, +)
+                var x = visibleFrame.midX - totalWidth / 2
+                for (note, width) in zip(edgeNotes, widths) {
+                    handleFrames[note.id] = CGRect(
+                        x: x,
+                        y: visibleFrame.maxY - topHandleHeight,
+                        width: width,
+                        height: topHandleHeight
+                    )
+                    x += width
+                }
+            } else {
+                let height = min(sideHandleHeight, visibleFrame.height / CGFloat(edgeNotes.count))
+                var y = visibleFrame.maxY
+                for note in edgeNotes {
+                    y -= height
+                    let width = sideHandleWidth(for: note.displayTitle)
+                    let x = edge == .right ? screenFrame.maxX - width : screenFrame.minX
+                    handleFrames[note.id] = CGRect(x: x, y: y, width: width, height: height)
+                }
             }
-            let fittedLengthByNoteID = fittedLengths(
-                for: edgeNotes,
-                edge: edge,
-                available: axisRange.upperBound - axisRange.lowerBound,
-                groupCount: edgeGroups.count
-            )
-            var occupied: [ClosedRange<CGFloat>] = []
 
-            for group in edgeGroups {
-                let groupNotes = activeNotes
-                    .filter { $0.placement.groupID == group.id }
-                    .sorted {
-                        if $0.placement.order != $1.placement.order {
-                            return $0.placement.order < $1.placement.order
-                        }
-                        return $0.createdAt < $1.createdAt
-                    }
-                guard !groupNotes.isEmpty else { continue }
-
-                var lengths = groupNotes.map { fittedLengthByNoteID[$0.id] ?? 1 }
-                var totalLength = lengths.reduce(0, +)
-                let desiredCenter = axisRange.lowerBound
-                    + CGFloat(group.normalizedCenter) * (axisRange.upperBound - axisRange.lowerBound)
-                var desiredOrigin = desiredCenter - totalLength / 2
-                var origin = resolvedOrigin(
-                    desired: desiredOrigin,
-                    length: totalLength,
-                    axisRange: axisRange,
-                    occupied: occupied
-                )
-                if origin == nil,
-                   let segment = availableSegments(axisRange: axisRange, occupied: occupied)
-                    .filter({ $0.upperBound - $0.lowerBound >= CGFloat(lengths.count) })
-                    .max(by: { ($0.upperBound - $0.lowerBound) < ($1.upperBound - $1.lowerBound) }) {
-                    lengths = compressedLengths(
-                        lengths,
-                        available: segment.upperBound - segment.lowerBound
-                    )
-                    totalLength = lengths.reduce(0, +)
-                    desiredOrigin = desiredCenter - totalLength / 2
-                    origin = resolvedOrigin(
-                        desired: desiredOrigin,
-                        length: totalLength,
-                        axisRange: axisRange,
-                        occupied: occupied
-                    )
-                }
-                guard let origin else { continue }
-                occupied.append(origin...(origin + totalLength))
-
-                if edge == .top {
-                    var x = origin
-                    for (note, width) in zip(groupNotes, lengths) {
-                        handleFrames[note.id] = CGRect(
-                            x: x,
-                            y: visibleFrame.maxY - topHandleHeight,
-                            width: width,
-                            height: topHandleHeight
-                        )
-                        x += width
-                    }
-                } else {
-                    var y = origin + totalLength
-                    for (note, height) in zip(groupNotes, lengths) {
-                        y -= height
-                        let width = sideHandleWidth(for: note.displayTitle)
-                        let x = edge == .right
-                            ? screenFrame.maxX - width
-                            : screenFrame.minX
-                        handleFrames[note.id] = CGRect(x: x, y: y, width: width, height: height)
-                    }
-                }
-
-                let frames = groupNotes.compactMap { handleFrames[$0.id] }
-                if let first = frames.first {
-                    groupFrames[group.id] = frames.dropFirst().reduce(first) { $0.union($1) }
+            let frames = edgeNotes.compactMap { handleFrames[$0.id] }
+            if let first = frames.first {
+                let union = frames.dropFirst().reduce(first) { $0.union($1) }
+                for groupID in Set(edgeNotes.map(\.placement.groupID)) {
+                    groupFrames[groupID] = union
                 }
             }
         }
 
         return EdgeLayoutSnapshot(handleFrames: handleFrames, groupFrames: groupFrames)
+    }
+
+    static func icePanelFrame(
+        edge: EdgeDock,
+        slot: Int,
+        indexGroupFrame: CGRect?,
+        screenFrame: CGRect,
+        visibleFrame: CGRect,
+        storedWidth: CGFloat?
+    ) -> CGRect {
+        let safeSlot = min(maxIcePerEdge - 1, max(0, slot))
+        let requestedWidth = storedWidth ?? panelWidth
+        let width = min(
+            min(MemoPanelSize.maximum.width, visibleFrame.width),
+            max(MemoPanelSize.minimum.width, requestedWidth)
+        )
+        let stackTop: CGFloat
+        if edge == .top {
+            stackTop = visibleFrame.maxY - topHandleHeight - groupGap
+        } else if let indexGroupFrame {
+            stackTop = indexGroupFrame.minY - groupGap
+        } else {
+            stackTop = visibleFrame.maxY
+        }
+        let availableHeight = max(1, stackTop - visibleFrame.minY)
+        let slotTop = (stackTop - availableHeight * CGFloat(safeSlot) / CGFloat(maxIcePerEdge)).rounded()
+        let slotBottom = (stackTop - availableHeight * CGFloat(safeSlot + 1) / CGFloat(maxIcePerEdge)).rounded()
+        let x: CGFloat
+        switch edge {
+        case .left:
+            x = screenFrame.minX
+        case .right:
+            x = screenFrame.maxX - width
+        case .top:
+            x = min(max(visibleFrame.midX - width / 2, visibleFrame.minX), visibleFrame.maxX - width)
+        }
+        return CGRect(x: x, y: slotBottom, width: width, height: max(1, slotTop - slotBottom))
     }
 
     static func panelFrame(

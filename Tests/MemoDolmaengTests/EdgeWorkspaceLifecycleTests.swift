@@ -4,6 +4,51 @@ import XCTest
 
 @MainActor
 final class EdgeWorkspaceLifecycleTests: XCTestCase {
+    func testFourthIceOnSameEdgeFoldsOldestAndKeepsNewestOnTop() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let notes = try (1...4).map { index in
+            try store.createNote(title: "메모 \(index)", content: "본문 \(index)")
+        }
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        notes.prefix(3).forEach { workspace.handleClick(noteID: $0.id) }
+        try await Task.sleep(for: .milliseconds(300))
+
+        let panels = NSApp.windows
+            .filter { $0.title == "메모돌맹 메모" && $0.isVisible }
+            .sorted { $0.frame.minY > $1.frame.minY }
+        XCTAssertEqual(panels.count, 3)
+        XCTAssertEqual(panels[0].frame.height, panels[1].frame.height, accuracy: 1)
+        XCTAssertEqual(panels[1].frame.height, panels[2].frame.height, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(panels[0].frame.minY, panels[1].frame.maxY)
+        XCTAssertGreaterThanOrEqual(panels[1].frame.minY, panels[2].frame.maxY)
+        XCTAssertLessThanOrEqual(panels[0].frame.minY - panels[1].frame.maxY, 1)
+        XCTAssertLessThanOrEqual(panels[1].frame.minY - panels[2].frame.maxY, 1)
+        for panel in panels {
+            let proposed = NSSize(width: panel.frame.width + 40, height: panel.frame.height + 100)
+            let resolved = try XCTUnwrap(panel.delegate?.windowWillResize?(panel, to: proposed))
+            XCTAssertEqual(resolved.height, panel.frame.height, accuracy: 0.001)
+            XCTAssertEqual(resolved.width, proposed.width, accuracy: 0.001)
+        }
+
+        workspace.handleClick(noteID: notes[3].id)
+
+        XCTAssertEqual(workspace.presentationState.iceNoteIDs, Array(notes.dropFirst().map(\.id)))
+        XCTAssertFalse(workspace.presentationState.isIce(notes[0].id))
+        XCTAssertEqual(workspace.presentationState.focusedIceNoteID, notes[3].id)
+        XCTAssertTrue(notes.allSatisfy { store.note(withID: $0.id) != nil })
+
+        for noteID in workspace.presentationState.iceNoteIDs {
+            workspace.closeMemo(noteID: noteID)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
     func testOpeningSecondIceKeepsFirstIceOpenAndStored() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)

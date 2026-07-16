@@ -1,7 +1,7 @@
 import Foundation
 
 struct NoteStoreEnvelope: Codable, Equatable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     var notes: [MemoNote]
@@ -75,6 +75,10 @@ final class NoteStore {
 
     func group(withID id: UUID) -> MemoEdgeGroup? {
         edgeGroups.first { $0.id == id }
+    }
+
+    func group(for edge: EdgeDock) -> MemoEdgeGroup? {
+        edgeGroups.first { $0.edge == edge }
     }
 
     var defaultGroup: MemoEdgeGroup {
@@ -190,10 +194,7 @@ final class NoteStore {
             var updated = note
             if let color { updated.color = color }
             if let textColorHex { updated.textColorHex = textColorHex }
-            if let aspectRatio {
-                updated.aspectRatio = aspectRatio
-                updated.panelSize = nil
-            }
+            if let aspectRatio { updated.aspectRatio = aspectRatio }
             if let opacity { updated.opacity = opacity }
             guard updated != note else { return false }
             updated.updatedAt = now()
@@ -202,10 +203,11 @@ final class NoteStore {
         }
     }
 
-    func updatePanelSize(noteID: UUID, size: CGSize) {
+    func updatePanelWidth(noteID: UUID, width: CGFloat) {
         mutate(noteID: noteID) { note in
             var updated = note
-            updated.panelSize = MemoPanelSize(size)
+            let storedHeight = note.panelSize?.cgSize.height ?? MemoPanelSize.minimum.height
+            updated.panelSize = MemoPanelSize(width: width, height: storedHeight)
             guard updated != note else { return false }
             updated.updatedAt = now()
             note = updated
@@ -257,7 +259,7 @@ final class NoteStore {
     func placeNote(
         noteID: UUID,
         edge: EdgeDock,
-        normalizedCenter: Double,
+        normalizedCenter _: Double,
         mergeInto targetGroupID: UUID?,
         order: Int
     ) -> Bool {
@@ -270,29 +272,33 @@ final class NoteStore {
         if let targetGroupID,
            let existing = updatedGroups.first(where: { $0.id == targetGroupID && $0.edge == edge }) {
             targetGroup = existing
-        } else if sourceGroupID != defaultGroupID,
-                  updatedNotes.filter({ $0.placement.groupID == sourceGroupID }).count == 1,
-                  let sourceIndex = updatedGroups.firstIndex(where: { $0.id == sourceGroupID }) {
-            updatedGroups[sourceIndex].edge = edge
-            updatedGroups[sourceIndex].normalizedCenter = normalizedCenter
-            targetGroup = updatedGroups[sourceIndex]
+        } else if let existing = updatedGroups.first(where: { $0.edge == edge }) {
+            targetGroup = existing
         } else {
             let created = MemoEdgeGroup(
                 edge: edge,
-                normalizedCenter: normalizedCenter,
+                normalizedCenter: edge == .top ? 0.5 : 1,
                 createdAt: now()
             )
             updatedGroups.append(created)
             targetGroup = created
         }
 
-        let insertionOrder = max(0, order)
-        for index in updatedNotes.indices where updatedNotes[index].id != noteID
-            && updatedNotes[index].placement.groupID == targetGroup.id
-            && updatedNotes[index].placement.order >= insertionOrder {
-            updatedNotes[index].placement.order += 1
+        let targetIndices = updatedNotes.indices
+            .filter { updatedNotes[$0].id != noteID && updatedNotes[$0].placement.groupID == targetGroup.id }
+            .sorted { updatedNotes[$0].placement.order < updatedNotes[$1].placement.order }
+        let insertionOrder = min(max(0, order), targetIndices.count)
+        var orderedTargetIndices = targetIndices
+        orderedTargetIndices.insert(noteIndex, at: insertionOrder)
+        for (resolvedOrder, index) in orderedTargetIndices.enumerated() {
+            updatedNotes[index].placement = MemoPlacement(groupID: targetGroup.id, order: resolvedOrder)
         }
-        updatedNotes[noteIndex].placement = MemoPlacement(groupID: targetGroup.id, order: insertionOrder)
+        let sourceIndices = updatedNotes.indices
+            .filter { updatedNotes[$0].id != noteID && updatedNotes[$0].placement.groupID == sourceGroupID }
+            .sorted { updatedNotes[$0].placement.order < updatedNotes[$1].placement.order }
+        for (resolvedOrder, index) in sourceIndices.enumerated() {
+            updatedNotes[index].placement.order = resolvedOrder
+        }
         updatedNotes[noteIndex].updatedAt = now()
 
         return commit(notes: updatedNotes, groups: updatedGroups, defaultGroupID: defaultGroupID)
@@ -310,12 +316,19 @@ final class NoteStore {
     }
 
     func setDefaultEdge(_ edge: EdgeDock) {
-        guard let index = edgeGroups.firstIndex(where: { $0.id == defaultGroupID }),
-              edgeGroups[index].edge != edge
-        else { return }
+        if let existing = edgeGroups.first(where: { $0.edge == edge }) {
+            guard existing.id != defaultGroupID else { return }
+            _ = commit(notes: notes, groups: edgeGroups, defaultGroupID: existing.id)
+            return
+        }
         var updatedGroups = edgeGroups
-        updatedGroups[index].edge = edge
-        _ = commit(notes: notes, groups: updatedGroups, defaultGroupID: defaultGroupID)
+        let group = MemoEdgeGroup(
+            edge: edge,
+            normalizedCenter: edge == .top ? 0.5 : 1,
+            createdAt: now()
+        )
+        updatedGroups.append(group)
+        _ = commit(notes: notes, groups: updatedGroups, defaultGroupID: group.id)
     }
 
     func save() {
@@ -345,10 +358,17 @@ final class NoteStore {
                 install(normalized)
                 if normalized != stored { try writeEnvelope(normalized) }
                 return
+            case 3:
+                let stored = try decoder.decode(NoteStoreEnvelope.self, from: data)
+                let migrated = normalizedEnvelope(stored)
+                try backupData(data, prefix: "notes-pre-edge-stack-v4")
+                try writeEnvelope(migrated)
+                install(migrated)
+                return
             case 2:
                 let stored = try decoder.decode(V2NoteStoreEnvelope.self, from: data)
                 let migrated = migrateV2(stored.notes)
-                try backupPreV3Data(data)
+                try backupData(data, prefix: "notes-pre-edge-v3")
                 try writeEnvelope(migrated)
                 install(migrated)
                 return
@@ -359,7 +379,7 @@ final class NoteStore {
 
         let legacyNotes = try decoder.decode([LegacyMemoNote].self, from: data)
         let migrated = migrateLegacy(legacyNotes)
-        try backupPreV3Data(data)
+        try backupData(data, prefix: "notes-pre-edge-v3")
         try writeEnvelope(migrated)
         install(migrated)
     }
@@ -478,31 +498,75 @@ final class NoteStore {
             result[index].isActive = allowedActiveIDs.contains(result[index].id)
         }
 
-        for groupID in groupsByID.keys {
-            let orderedIndices = result.indices
-                .filter { result[$0].placement.groupID == groupID }
-                .sorted {
-                    let lhs = result[$0]
-                    let rhs = result[$1]
-                    if lhs.isActive != rhs.isActive { return lhs.isActive && !rhs.isActive }
-                    if lhs.placement.order != rhs.placement.order { return lhs.placement.order < rhs.placement.order }
-                    return lhs.createdAt < rhs.createdAt
+        var canonicalGroups: [EdgeDock: MemoEdgeGroup] = [:]
+        for edge in EdgeDock.allCases {
+            let candidates = groupsByID.values.filter { $0.edge == edge }
+            let selected = candidates.first { $0.id == defaultID }
+                ?? candidates.min {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                    return $0.id.uuidString < $1.id.uuidString
                 }
-            for (order, index) in orderedIndices.enumerated() {
-                result[index].placement.order = order
+            if let selected {
+                canonicalGroups[edge] = MemoEdgeGroup(
+                    id: selected.id,
+                    edge: edge,
+                    normalizedCenter: edge == .top ? 0.5 : 1,
+                    createdAt: selected.createdAt
+                )
             }
         }
 
-        let referencedGroupIDs = Set(result.map(\.placement.groupID)).union([defaultID])
-        let groups = groupsByID.values
-            .filter { referencedGroupIDs.contains($0.id) }
-            .sorted {
-                if $0.id == defaultID { return true }
-                if $1.id == defaultID { return false }
-                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-                return $0.id.uuidString < $1.id.uuidString
+        for edge in EdgeDock.allCases {
+            let indices = result.indices.filter {
+                let source = groupsByID[result[$0].placement.groupID] ?? groupsByID[defaultID]
+                return source?.edge == edge
             }
-        return NoteStoreEnvelope(notes: result, edgeGroups: groups, defaultGroupID: defaultID)
+            guard !indices.isEmpty else { continue }
+            let canonical: MemoEdgeGroup
+            if let existing = canonicalGroups[edge] {
+                canonical = existing
+            } else {
+                canonical = MemoEdgeGroup(
+                    edge: edge,
+                    normalizedCenter: edge == .top ? 0.5 : 1,
+                    createdAt: now()
+                )
+                canonicalGroups[edge] = canonical
+            }
+            let ordered = indices.sorted { lhsIndex, rhsIndex in
+                let lhs = result[lhsIndex]
+                let rhs = result[rhsIndex]
+                if lhs.isActive != rhs.isActive { return lhs.isActive && !rhs.isActive }
+                let lhsGroup = groupsByID[lhs.placement.groupID] ?? canonical
+                let rhsGroup = groupsByID[rhs.placement.groupID] ?? canonical
+                if lhsGroup.id != rhsGroup.id,
+                   lhsGroup.normalizedCenter != rhsGroup.normalizedCenter {
+                    return edge == .top
+                        ? lhsGroup.normalizedCenter < rhsGroup.normalizedCenter
+                        : lhsGroup.normalizedCenter > rhsGroup.normalizedCenter
+                }
+                if lhs.placement.order != rhs.placement.order {
+                    return lhs.placement.order < rhs.placement.order
+                }
+                return lhs.createdAt < rhs.createdAt
+            }
+            for (order, index) in ordered.enumerated() {
+                result[index].placement = MemoPlacement(groupID: canonical.id, order: order)
+            }
+        }
+
+        let defaultEdge = groupsByID[defaultID]?.edge ?? .right
+        if canonicalGroups[defaultEdge] == nil {
+            canonicalGroups[defaultEdge] = MemoEdgeGroup(
+                id: defaultID,
+                edge: defaultEdge,
+                normalizedCenter: defaultEdge == .top ? 0.5 : 1,
+                createdAt: now()
+            )
+        }
+        let resolvedDefaultID = canonicalGroups[defaultEdge]?.id ?? defaultID
+        let groups = EdgeDock.allCases.compactMap { canonicalGroups[$0] }
+        return NoteStoreEnvelope(notes: result, edgeGroups: groups, defaultGroupID: resolvedDefaultID)
     }
 
     private func nextFallbackTitleIndex() -> Int {
@@ -553,7 +617,7 @@ final class NoteStore {
         NoteStoreEnvelope(notes: notes, edgeGroups: edgeGroups, defaultGroupID: defaultGroupID)
     }
 
-    private func backupPreV3Data(_ data: Data) throws {
+    private func backupData(_ data: Data, prefix: String) throws {
         let backupDirectory = persistenceURL
             .deletingLastPathComponent()
             .appendingPathComponent("Backups", isDirectory: true)
@@ -565,10 +629,10 @@ final class NoteStore {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
         let timestamp = formatter.string(from: now())
-        var backupURL = backupDirectory.appendingPathComponent("notes-pre-edge-v3-\(timestamp).json")
+        var backupURL = backupDirectory.appendingPathComponent("\(prefix)-\(timestamp).json")
         var suffix = 2
         while fileManager.fileExists(atPath: backupURL.path) {
-            backupURL = backupDirectory.appendingPathComponent("notes-pre-edge-v3-\(timestamp)-\(suffix).json")
+            backupURL = backupDirectory.appendingPathComponent("\(prefix)-\(timestamp)-\(suffix).json")
             suffix += 1
         }
         try data.write(to: backupURL, options: .atomic)
