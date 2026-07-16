@@ -1,357 +1,366 @@
 import AppKit
+import MarkdownEngine
 import SwiftUI
 import UniformTypeIdentifiers
-import WebKit
 
-struct MarkdownEditorView: NSViewRepresentable {
-    let markdown: String
-    let theme: MarkdownEditorTheme
+struct MarkdownEditorView: View {
+    @Binding var markdown: String
+
+    let documentID: UUID
+    let textColor: NSColor
     let assetRootURL: URL
     let onInteraction: () -> Void
-    let onMarkdownChange: (String) -> Void
     let onImageUpload: (Data, String) throws -> URL
 
-    static var editorIndexURL: URL? {
-        Bundle.module.url(
-            forResource: "index",
-            withExtension: "html",
-            subdirectory: "MarkdownEditor"
-        )
-    }
+    @ObservedObject private var preferences = AppPreferences.shared
+    @State private var isWikiLinkActive = false
+    @State private var pendingInlineReplacement: InlineReplacementRequest?
+    @State private var isBold = false
+    @State private var isItalic = false
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(
-            onInteraction: onInteraction,
-            onMarkdownChange: onMarkdownChange,
-            onImageUpload: onImageUpload
-        )
-    }
+    var body: some View {
+        let toolbarColor = Color(nsColor: textColor)
+        let markdownBus = MemoMarkdownBus(documentID: documentID)
 
-    func makeNSView(context: Context) -> WKWebView {
-        let userContentController = WKUserContentController()
-        for name in Coordinator.messageNames {
-            userContentController.add(context.coordinator, name: name)
-        }
+        VStack(spacing: 0) {
+            NativeMarkdownToolbar(
+                bus: markdownBus,
+                textColor: textColor,
+                isBold: isBold,
+                isItalic: isItalic,
+                onInsertImage: chooseImage
+            )
 
-        let configuration = WKWebViewConfiguration()
-        configuration.userContentController = userContentController
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.setURLSchemeHandler(
-            MemoAssetSchemeHandler(rootURL: assetRootURL),
-            forURLScheme: MemoAssetSchemeHandler.scheme
-        )
+            Rectangle()
+                .fill(toolbarColor.opacity(0.2))
+                .frame(height: 1)
 
-        let webView = MemoMarkdownWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        let coordinator = context.coordinator
-        webView.onInteraction = { [weak coordinator] in coordinator?.onInteraction() }
-        webView.onRequestEditorCommand = { [weak coordinator] command in
-            coordinator?.performCommand(command)
-            return true
-        }
-        webView.allowsBackForwardNavigationGestures = false
-        webView.setValue(false, forKey: "drawsBackground")
-        webView.underPageBackgroundColor = .clear
-
-        context.coordinator.attach(webView)
-        context.coordinator.loadEditor(markdown: markdown, theme: theme)
-        return webView
-    }
-
-    func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.onInteraction = onInteraction
-        context.coordinator.onMarkdownChange = onMarkdownChange
-        context.coordinator.onImageUpload = onImageUpload
-        context.coordinator.sync(markdown: markdown, theme: theme)
-    }
-
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        for name in Coordinator.messageNames {
-            nsView.configuration.userContentController.removeScriptMessageHandler(forName: name)
-        }
-        coordinator.detach()
-    }
-
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
-        static let messageNames = [
-            "editorReady",
-            "editorChanged",
-            "editorFocusChanged",
-            "editorAppCommand",
-            "editorImageUpload"
-        ]
-
-        var onInteraction: () -> Void
-        var onMarkdownChange: (String) -> Void
-        var onImageUpload: (Data, String) throws -> URL
-
-        private weak var webView: WKWebView?
-        private var isReady = false
-        private var pendingMarkdown = ""
-        private var pendingTheme = MarkdownEditorTheme.current()
-        private var editorMarkdown = ""
-
-        init(
-            onInteraction: @escaping () -> Void,
-            onMarkdownChange: @escaping (String) -> Void,
-            onImageUpload: @escaping (Data, String) throws -> URL
-        ) {
-            self.onInteraction = onInteraction
-            self.onMarkdownChange = onMarkdownChange
-            self.onImageUpload = onImageUpload
-            super.init()
-        }
-
-        func attach(_ webView: WKWebView) {
-            self.webView = webView
-        }
-
-        func detach() {
-            webView = nil
-        }
-
-        func loadEditor(markdown: String, theme: MarkdownEditorTheme) {
-            pendingMarkdown = markdown
-            pendingTheme = theme
-
-            guard let indexURL = MarkdownEditorView.editorIndexURL else {
-                webView?.loadHTMLString(
-                    "<html><body><pre>Markdown editor resource missing.</pre></body></html>",
-                    baseURL: nil
+            NativeTextViewWrapper(
+                text: $markdown,
+                isWikiLinkActive: $isWikiLinkActive,
+                pendingInlineReplacement: $pendingInlineReplacement,
+                configuration: editorConfiguration,
+                fontName: NSFont.systemFont(ofSize: preferences.bodyFontSize).fontName,
+                fontSize: preferences.bodyFontSize,
+                documentId: documentID.uuidString,
+                onPasteImage: importPastedImage,
+                onLinkClick: openLink,
+                placeholder: NSAttributedString(
+                    string: "메모를 입력해",
+                    attributes: [
+                        .font: NSFont.systemFont(ofSize: preferences.bodyFontSize),
+                        .foregroundColor: textColor.withAlphaComponent(0.42)
+                    ]
                 )
-                return
-            }
-            webView?.loadFileURL(indexURL, allowingReadAccessTo: indexURL.deletingLastPathComponent())
-        }
-
-        func sync(markdown: String, theme: MarkdownEditorTheme) {
-            pendingMarkdown = markdown
-            pendingTheme = theme
-            guard isReady else { return }
-
-            if markdown != editorMarkdown {
-                editorMarkdown = markdown
-                evaluate("window.setMemoMarkdown(\(javascriptStringLiteral(markdown)));")
-            }
-            applyTheme(theme)
-        }
-
-        func focusEditor() {
-            webView?.window?.makeFirstResponder(webView)
-            evaluate("window.focusMemoEditor && window.focusMemoEditor();")
-        }
-
-        func performCommand(_ command: String) {
-            evaluate("window.memoEditorCommand && window.memoEditorCommand(\(javascriptStringLiteral(command)));")
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            isReady = true
-            sync(markdown: pendingMarkdown, theme: pendingTheme)
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
-            guard navigationAction.navigationType == .linkActivated,
-                  let url = navigationAction.request.url
-            else {
-                decisionHandler(.allow)
-                return
-            }
-
-            if Self.isSafeExternalURL(url) {
-                NSWorkspace.shared.open(url)
-            }
-            decisionHandler(.cancel)
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            runOpenPanelWith parameters: WKOpenPanelParameters,
-            initiatedByFrame frame: WKFrameInfo,
-            completionHandler: @escaping ([URL]?) -> Void
-        ) {
-            let panel = NSOpenPanel()
-            panel.title = "메모에 이미지 추가"
-            panel.allowedContentTypes = [.image]
-            panel.canChooseDirectories = false
-            panel.canChooseFiles = true
-            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-
-            if let window = webView.window {
-                panel.beginSheetModal(for: window) { response in
-                    completionHandler(response == .OK ? panel.urls : nil)
-                }
-            } else {
-                completionHandler(panel.runModal() == .OK ? panel.urls : nil)
-            }
-        }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            switch message.name {
-            case "editorReady":
-                isReady = true
-                sync(markdown: pendingMarkdown, theme: pendingTheme)
-            case "editorChanged":
-                guard let markdown = (message.body as? [String: Any])?["markdown"] as? String else { return }
-                editorMarkdown = markdown
-                onMarkdownChange(markdown)
-            case "editorFocusChanged":
-                guard let payload = message.body as? [String: Any],
-                      let focused = payload["focused"] as? Bool
-                else { return }
-                (webView as? MemoMarkdownWebView)?.editorIsFocused = focused
-            case "editorAppCommand":
-                guard let command = (message.body as? [String: Any])?["command"] as? String else { return }
-                handleAppCommand(command)
-            case "editorImageUpload":
-                handleImageUpload(message.body)
-            default:
-                break
-            }
-        }
-
-        private func handleImageUpload(_ body: Any) {
-            guard let payload = body as? [String: Any],
-                  let requestID = payload["requestID"] as? String,
-                  let fileName = payload["fileName"] as? String,
-                  let base64 = payload["base64"] as? String,
-                  base64.utf8.count <= 30_000_000,
-                  let data = Data(base64Encoded: base64)
-            else {
-                if let requestID = (body as? [String: Any])?["requestID"] as? String {
-                    resolveImageUpload(requestID: requestID, error: "이미지 데이터가 올바르지 않아.")
-                }
-                return
-            }
-
-            do {
-                let url = try onImageUpload(data, fileName)
-                resolveImageUpload(requestID: requestID, url: url)
-            } catch {
-                resolveImageUpload(requestID: requestID, error: error.localizedDescription)
-            }
-        }
-
-        private func resolveImageUpload(requestID: String, url: URL? = nil, error: String? = nil) {
-            let urlValue = url.map { javascriptStringLiteral($0.absoluteString) } ?? "null"
-            let errorValue = error.map(javascriptStringLiteral) ?? "null"
-            evaluate(
-                "window.resolveMemoImageUpload && window.resolveMemoImageUpload(\(javascriptStringLiteral(requestID)), \(urlValue), \(errorValue));"
             )
         }
-
-        private func applyTheme(_ theme: MarkdownEditorTheme) {
-            guard let data = try? JSONSerialization.data(withJSONObject: theme.values),
-                  let json = String(data: data, encoding: .utf8)
-            else { return }
-            evaluate("window.setMemoEditorTheme && window.setMemoEditorTheme(\(json));")
+        .background(Color.clear)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded(onInteraction))
+        .onReceive(NotificationCenter.default.publisher(for: markdownBus.selectionBoldDidChange)) {
+            isBold = $0.userInfo?["isBold"] as? Bool ?? false
         }
+        .onReceive(NotificationCenter.default.publisher(for: markdownBus.selectionItalicDidChange)) {
+            isItalic = $0.userInfo?["isItalic"] as? Bool ?? false
+        }
+    }
 
-        private func handleAppCommand(_ command: String) {
-            guard let controller = webView?.window?.windowController as? MemoPanelController else { return }
-            switch command {
-            case "closeNote":
-                controller.requestFold()
-            case "newNote":
-                NotificationCenter.default.post(name: .memoDolmaengCreateNoteRequested, object: self)
-            default:
-                break
+    private var editorConfiguration: MarkdownEditorConfiguration {
+        let bodySize = max(1, preferences.bodyFontSize)
+        let mutedText = textColor.withAlphaComponent(0.56)
+        let disabledText = textColor.withAlphaComponent(0.34)
+
+        return MarkdownEditorConfiguration(
+            theme: MarkdownEditorTheme(
+                bodyText: textColor,
+                mutedText: mutedText,
+                disabledText: disabledText,
+                headingMarker: mutedText,
+                link: NSColor.systemBlue,
+                incompleteLink: NSColor.systemBlue.withAlphaComponent(0.72),
+                findMatchHighlight: NSColor.systemYellow.withAlphaComponent(0.45),
+                findCurrentMatchHighlight: NSColor.systemOrange.withAlphaComponent(0.55),
+                latexLightModeText: textColor,
+                latexDarkModeText: textColor,
+                strikethroughColor: textColor,
+                highlightColor: NSColor.systemYellow.withAlphaComponent(0.36)
+            ),
+            services: MarkdownEditorServices(
+                images: MemoEmbeddedImageProvider(rootURL: assetRootURL),
+                bus: MemoMarkdownBus(documentID: documentID).editorBus
+            ),
+            codeBlock: CodeBlockStyle(
+                fontSizeScale: preferences.codeFontSize / bodySize,
+                paragraphSpacing: preferences.codeBlockSpacing,
+                horizontalIndent: preferences.horizontalInset
+            ),
+            inlineCode: InlineCodeStyle(fontSizeScale: preferences.codeFontSize / bodySize),
+            lists: ListStyle(
+                helpersEnabled: true,
+                autoClosePairsEnabled: true,
+                indentPerLevel: preferences.listIndent,
+                maximumNestingLevel: 6,
+                extraLineHeight: 1
+            ),
+            headings: HeadingStyle(
+                fontMultipliers: [
+                    preferences.heading1FontSize / bodySize,
+                    preferences.heading2FontSize / bodySize,
+                    preferences.heading3FontSize / bodySize,
+                    1,
+                    0.92,
+                    0.84
+                ],
+                topSpacingEm: [
+                    preferences.heading1Spacing / bodySize,
+                    preferences.heading2Spacing / bodySize,
+                    preferences.heading3Spacing / bodySize,
+                    0.12,
+                    0.1,
+                    0.08
+                ]
+            ),
+            imageEmbed: ImageEmbedStyle(
+                minimumWidth: 48,
+                fallbackMaxWidth: 560,
+                unreasonableMaxWidth: 1_000_000,
+                paragraphSpacing: 6,
+                imageGap: 6
+            ),
+            blockquote: BlockquoteStyle(extraLineHeight: 1),
+            paragraph: ParagraphStyle(
+                spacingFactor: preferences.paragraphSpacing / bodySize,
+                lineHeightExtraSpacing: 1
+            ),
+            overscroll: OverscrollPolicy(
+                percent: 0.18,
+                maxPoints: 90,
+                minPoints: 16,
+                activationStartFraction: 0.25,
+                activationRangeFraction: 0.75
+            ),
+            safeAreaInsets: .default,
+            scrollers: .hidden,
+            textInsets: TextInsets(
+                horizontal: preferences.horizontalInset,
+                vertical: preferences.verticalInset
+            ),
+            spellChecking: SpellCheckingPolicy(
+                continuousSpellChecking: true,
+                grammarChecking: false,
+                automaticSpellingCorrection: true
+            ),
+            extensions: [StrikethroughExtension()]
+        )
+    }
+
+    private func openLink(_ value: String) {
+        guard let url = URL(string: value), Self.isSafeExternalURL(url) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.title = "메모에 이미지 추가"
+        panel.allowedContentTypes = [.image]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: sourceURL, options: .mappedIfSafe)
+            let assetURL = try onImageUpload(data, sourceURL.lastPathComponent)
+            MemoMarkdownBus(documentID: documentID).post(
+                MemoMarkdownBus(documentID: documentID).applyImageRequest,
+                userInfo: ["url": assetURL.absoluteString]
+            )
+        } catch {
+            presentImageError(error)
+        }
+    }
+
+    private func importPastedImage(_ pasteboard: NSPasteboard) -> String? {
+        do {
+            if let sourceURL = pasteboardFileURL(pasteboard) {
+                let data = try Data(contentsOf: sourceURL, options: .mappedIfSafe)
+                let assetURL = try onImageUpload(data, sourceURL.lastPathComponent)
+                return "![](" + assetURL.absoluteString + ")"
             }
-        }
 
-        private func evaluate(_ javascript: String) {
-            webView?.evaluateJavaScript(javascript)
+            if let image = NSImage(pasteboard: pasteboard),
+               let tiff = image.tiffRepresentation,
+               let representation = NSBitmapImageRep(data: tiff),
+               let data = representation.representation(using: .png, properties: [:]) {
+                let assetURL = try onImageUpload(data, "붙여넣은 이미지.png")
+                return "![](" + assetURL.absoluteString + ")"
+            }
+        } catch {
+            presentImageError(error)
         }
+        return nil
+    }
 
-        func focusEditor(at windowPoint: NSPoint) {
-            guard let webView else { return }
-            webView.window?.makeFirstResponder(webView)
+    private func pasteboardFileURL(_ pasteboard: NSPasteboard) -> URL? {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return (pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?
+            .first(where: { url in
+                guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+                return type.conforms(to: .image)
+            })
+    }
 
-            let viewPoint = webView.convert(windowPoint, from: nil)
-            let x = max(0, min(webView.bounds.width, viewPoint.x))
-            let y = max(0, min(webView.bounds.height, webView.bounds.height - viewPoint.y))
-            evaluate("window.focusMemoEditorAt && window.focusMemoEditorAt(\(Double(x)), \(Double(y)));")
-        }
+    private func presentImageError(_ error: Error) {
+        let alert = NSAlert(error: error)
+        alert.messageText = "이미지를 추가할 수 없어"
+        alert.runModal()
+    }
 
-        private func javascriptStringLiteral(_ value: String) -> String {
-            guard let data = try? JSONEncoder().encode(value),
-                  let encoded = String(data: data, encoding: .utf8)
-            else { return "\"\"" }
-            return encoded
-        }
-
-        private static func isSafeExternalURL(_ url: URL) -> Bool {
-            guard let scheme = url.scheme?.lowercased() else { return false }
-            return ["http", "https", "mailto"].contains(scheme)
-        }
+    private static func isSafeExternalURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return ["http", "https", "mailto"].contains(scheme)
     }
 }
 
-struct MarkdownEditorTheme: Equatable {
-    let values: [String: String]
-    private static let contentTopClearance: CGFloat = 12
+private struct NativeMarkdownToolbar: View {
+    let bus: MemoMarkdownBus
+    let textColor: NSColor
+    let isBold: Bool
+    let isItalic: Bool
+    let onInsertImage: () -> Void
 
-    static func current(
-        preferences: AppPreferences = .shared,
-        textColor: NSColor? = nil,
-        showsTopBar: Bool = true
-    ) -> MarkdownEditorTheme {
-        MarkdownEditorTheme(values: [
-            "memo-text-color": cssColor(textColor ?? preferences.textColor),
-            "memo-body-font-size": cssLength(preferences.bodyFontSize),
-            "memo-heading1-font-size": cssLength(preferences.heading1FontSize),
-            "memo-heading2-font-size": cssLength(preferences.heading2FontSize),
-            "memo-heading3-font-size": cssLength(preferences.heading3FontSize),
-            "memo-code-font-size": cssLength(preferences.codeFontSize),
-            "memo-padding-x": cssLength(preferences.horizontalInset),
-            "memo-padding-top": cssLength(preferences.verticalInset + contentTopClearance),
-            "memo-padding-bottom": cssLength(preferences.verticalInset),
-            "memo-list-indent": cssLength(preferences.listIndent),
-            "memo-quote-indent": cssLength(preferences.quoteIndent),
-            "memo-top-bar-display": showsTopBar ? "flex" : "none"
-        ])
+    private var toolbarColor: Color { Color(nsColor: textColor) }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
+                Menu {
+                    ForEach(1...3, id: \.self) { level in
+                        Button("제목 \(level)") { bus.heading(level) }
+                    }
+                } label: {
+                    Image(systemName: "textformat.size")
+                        .foregroundStyle(toolbarColor)
+                        .frame(width: 26, height: 26)
+                }
+                .menuStyle(.borderlessButton)
+                .tint(toolbarColor)
+                .fixedSize()
+                .help("본문 및 제목")
+
+                toolbarButton("bold", help: "굵게", active: isBold) {
+                    bus.post(bus.applyBoldRequest)
+                }
+                toolbarButton("italic", help: "기울임", active: isItalic) {
+                    bus.post(bus.applyItalicRequest)
+                }
+                toolbarButton("strikethrough", help: "취소선") {
+                    bus.post(bus.applyStrikethroughRequest)
+                }
+
+                Rectangle()
+                    .fill(toolbarColor.opacity(0.24))
+                    .frame(width: 1, height: 16)
+
+                toolbarButton("list.bullet", help: "글머리표") {
+                    bus.post(bus.applyUnorderedListRequest)
+                }
+                toolbarButton("list.number", help: "번호 목록") {
+                    bus.post(bus.applyOrderedListRequest)
+                }
+                toolbarButton("text.quote", help: "인용") {
+                    bus.post(bus.applyBlockquoteRequest)
+                }
+                toolbarButton("chevron.left.forwardslash.chevron.right", help: "인라인 코드") {
+                    bus.post(bus.applyInlineCodeRequest)
+                }
+                toolbarButton("curlybraces.square", help: "코드 블록") {
+                    bus.post(bus.applyCodeBlockRequest)
+                }
+                toolbarButton("photo", help: "이미지 추가", action: onInsertImage)
+            }
+            .padding(.horizontal, 8)
+            .foregroundStyle(toolbarColor)
+            .tint(toolbarColor)
+        }
+        .frame(height: 36)
     }
 
-    private static func cssLength(_ value: CGFloat) -> String {
-        String(format: "%.2fpx", Double(value))
-    }
-
-    private static func cssColor(_ color: NSColor) -> String {
-        let rgb = color.usingColorSpace(.sRGB) ?? color
-        let red = Int(round(max(0, min(1, rgb.redComponent)) * 255))
-        let green = Int(round(max(0, min(1, rgb.greenComponent)) * 255))
-        let blue = Int(round(max(0, min(1, rgb.blueComponent)) * 255))
-        let alpha = max(0, min(1, rgb.alphaComponent))
-        return String(format: "rgba(%d, %d, %d, %.3f)", red, green, blue, Double(alpha))
+    private func toolbarButton(
+        _ symbol: String,
+        help: String,
+        active: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .foregroundStyle(toolbarColor)
+                .frame(width: 26, height: 26)
+                .background(active ? toolbarColor.opacity(0.16) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 }
 
-final class MemoMarkdownWebView: WKWebView {
-    var editorIsFocused = false
-    var onInteraction: (() -> Void)?
-    var onRequestEditorCommand: ((String) -> Bool)?
+struct MemoMarkdownBus {
+    let documentID: UUID
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
+    var applyBoldRequest: Notification.Name { name("ApplyBold") }
+    var applyItalicRequest: Notification.Name { name("ApplyItalic") }
+    var applyHeadingRequest: Notification.Name { name("ApplyHeading") }
+    var applyStrikethroughRequest: Notification.Name { name("ApplyStrikethrough") }
+    var applyInlineCodeRequest: Notification.Name { name("ApplyInlineCode") }
+    var applyBlockquoteRequest: Notification.Name { name("ApplyBlockquote") }
+    var applyUnorderedListRequest: Notification.Name { name("ApplyUnorderedList") }
+    var applyOrderedListRequest: Notification.Name { name("ApplyOrderedList") }
+    var applyCodeBlockRequest: Notification.Name { name("ApplyCodeBlock") }
+    var applyImageRequest: Notification.Name { name("ApplyImage") }
+    var selectionBoldDidChange: Notification.Name { name("SelectionBold") }
+    var selectionItalicDidChange: Notification.Name { name("SelectionItalic") }
+
+    var editorBus: MarkdownEditorBus {
+        MarkdownEditorBus(
+        applyBoldRequest: applyBoldRequest,
+        applyItalicRequest: applyItalicRequest,
+        applyHeadingRequest: applyHeadingRequest,
+        applyStrikethroughRequest: applyStrikethroughRequest,
+        applyInlineCodeRequest: applyInlineCodeRequest,
+        applyBlockquoteRequest: applyBlockquoteRequest,
+        applyUnorderedListRequest: applyUnorderedListRequest,
+        applyOrderedListRequest: applyOrderedListRequest,
+        applyCodeBlockRequest: applyCodeBlockRequest,
+        applyImageRequest: applyImageRequest,
+        selectionBoldDidChange: selectionBoldDidChange,
+        selectionItalicDidChange: selectionItalicDidChange
+        )
     }
 
-    override func mouseDown(with event: NSEvent) {
-        onInteraction?()
-        super.mouseDown(with: event)
+    func post(_ name: Notification.Name, userInfo: [AnyHashable: Any]? = nil) {
+        NotificationCenter.default.post(name: name, object: nil, userInfo: userInfo)
     }
 
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let flags = KeyboardShortcuts.normalizedModifiers(for: event)
-        if flags == .command,
-           event.keyCode == KeyboardShortcuts.KeyCode.a,
-           onRequestEditorCommand?("selectAll") == true {
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
+    func heading(_ level: Int) {
+        post(applyHeadingRequest, userInfo: ["level": level])
+    }
+
+    private func name(_ action: String) -> Notification.Name {
+        Notification.Name("MemoDolmaeng.Markdown.\(documentID.uuidString).\(action)")
+    }
+}
+
+struct MemoEmbeddedImageProvider: EmbeddedImageProvider {
+    let rootURL: URL
+
+    func image(for reference: EmbeddedImageRequest) -> NSImage? {
+        guard let requestURL = URL(string: reference.name),
+              let fileURL = MemoAssetSchemeHandler.resolvedFileURL(for: requestURL, rootURL: rootURL)
+        else { return nil }
+        return NSImage(contentsOf: fileURL)
+    }
+
+    func fingerprint() -> AnyHashable {
+        rootURL.standardizedFileURL.path
     }
 }

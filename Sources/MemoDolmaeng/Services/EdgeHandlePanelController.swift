@@ -40,7 +40,7 @@ final class EdgeHandlePanelController: NSWindowController {
             defer: false
         )
         panel.contentView = handleView
-        panel.level = .floating
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true

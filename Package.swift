@@ -10,18 +10,26 @@ let package = Package(
     products: [
         .executable(name: "MemoDolmaeng", targets: ["MemoDolmaeng"])
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/nodes-app/swift-markdown-engine",
+            exact: "0.10.0"
+        )
+    ],
     targets: [
         .executableTarget(
             name: "MemoDolmaeng",
-            path: "Sources/MemoDolmaeng",
-            resources: [
-                .copy("Resources/MarkdownEditor"),
-                .copy("Resources/MarkdownRenderer")
-            ]
+            dependencies: [
+                .product(name: "MarkdownEngine", package: "swift-markdown-engine")
+            ],
+            path: "Sources/MemoDolmaeng"
         ),
         .testTarget(
             name: "MemoDolmaengTests",
-            dependencies: ["MemoDolmaeng"],
+            dependencies: [
+                "MemoDolmaeng",
+                .product(name: "MarkdownEngine", package: "swift-markdown-engine")
+            ],
             path: "Tests/MemoDolmaengTests"
         )
     ]

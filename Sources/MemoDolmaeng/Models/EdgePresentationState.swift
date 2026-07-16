@@ -23,23 +23,27 @@ enum EdgeIndexVisibilityState: Equatable {
     case dragging(UUID)
 }
 
-enum EdgePresentationState: Equatable {
-    case closed
-    case peek(UUID)
-    case ice(UUID)
+struct EdgePresentationState: Equatable {
+    var peekNoteID: UUID?
+    var iceNoteIDs: [UUID]
 
-    var noteID: UUID? {
-        switch self {
-        case .closed:
-            nil
-        case let .peek(noteID), let .ice(noteID):
-            noteID
+    init(peekNoteID: UUID? = nil, iceNoteIDs: [UUID] = []) {
+        self.peekNoteID = peekNoteID
+        self.iceNoteIDs = iceNoteIDs.reduce(into: []) { result, noteID in
+            if !result.contains(noteID) { result.append(noteID) }
         }
     }
 
-    var isIce: Bool {
-        if case .ice = self { return true }
-        return false
+    var focusedIceNoteID: UUID? { iceNoteIDs.last }
+    var currentNoteID: UUID? { peekNoteID ?? focusedIceNoteID }
+    var hasOpenPanels: Bool { peekNoteID != nil || !iceNoteIDs.isEmpty }
+
+    func isIce(_ noteID: UUID) -> Bool {
+        iceNoteIDs.contains(noteID)
+    }
+
+    func isPresented(_ noteID: UUID) -> Bool {
+        peekNoteID == noteID || isIce(noteID)
     }
 }
 
@@ -48,6 +52,9 @@ enum EdgePresentationAction: Equatable {
     case click(UUID)
     case doubleClick(UUID)
     case toggleMode
+    case close(UUID)
+    case focus(UUID)
+    case clearPeek
 }
 
 enum EdgePresentationReducer {
@@ -55,17 +62,40 @@ enum EdgePresentationReducer {
         state: EdgePresentationState,
         action: EdgePresentationAction
     ) -> EdgePresentationState {
+        var next = state
         switch action {
         case let .hover(noteID):
-            return state.isIce ? state : .peek(noteID)
+            guard !next.isIce(noteID) else { return next }
+            next.peekNoteID = noteID
         case let .click(noteID):
-            if state == .ice(noteID) { return .closed }
-            return .ice(noteID)
+            next.peekNoteID = nil
+            if let index = next.iceNoteIDs.firstIndex(of: noteID) {
+                next.iceNoteIDs.remove(at: index)
+            } else {
+                next.iceNoteIDs.append(noteID)
+            }
         case let .doubleClick(noteID):
-            return .ice(noteID)
+            next.peekNoteID = nil
+            next.iceNoteIDs.removeAll { $0 == noteID }
+            next.iceNoteIDs.append(noteID)
         case .toggleMode:
-            guard let noteID = state.noteID else { return .closed }
-            return state.isIce ? .peek(noteID) : .ice(noteID)
+            if let noteID = next.peekNoteID {
+                next.peekNoteID = nil
+                next.iceNoteIDs.removeAll { $0 == noteID }
+                next.iceNoteIDs.append(noteID)
+            } else if let noteID = next.iceNoteIDs.popLast() {
+                next.peekNoteID = noteID
+            }
+        case let .close(noteID):
+            if next.peekNoteID == noteID { next.peekNoteID = nil }
+            next.iceNoteIDs.removeAll { $0 == noteID }
+        case let .focus(noteID):
+            guard next.isIce(noteID) else { return next }
+            next.iceNoteIDs.removeAll { $0 == noteID }
+            next.iceNoteIDs.append(noteID)
+        case .clearPeek:
+            next.peekNoteID = nil
         }
+        return next
     }
 }

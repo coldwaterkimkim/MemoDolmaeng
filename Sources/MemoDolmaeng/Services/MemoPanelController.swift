@@ -1,15 +1,16 @@
 import AppKit
 import QuartzCore
 import SwiftUI
-import WebKit
 
 @MainActor
 final class MemoPanelController: NSWindowController {
     private let assetRootURL: URL
-    private var hostingController: NSHostingController<EdgeMemoPanelView>?
+    private var hostingController: NSHostingController<UnifiedEdgeMemoSurfaceView>?
     private var viewModel: NoteEditorViewModel?
     private var currentEdge: EdgeDock = .right
+    private var currentBodyFrame: CGRect = .zero
     private var currentHandleFrame: CGRect = .zero
+    private var currentSurfaceFrame: CGRect = .zero
     private var currentScreenFrame: CGRect = .zero
     private var currentVisibleFrame: CGRect = .zero
     private var isIce = false
@@ -77,10 +78,16 @@ final class MemoPanelController: NSWindowController {
         onContentChange: @escaping (String) -> Void
     ) {
         currentEdge = edge
+        currentBodyFrame = frame
         currentHandleFrame = handleFrame
+        currentSurfaceFrame = EdgeLayoutEngine.unifiedSurfaceFrame(
+            bodyFrame: frame,
+            handleFrame: handleFrame
+        )
         currentScreenFrame = screenFrame
         currentVisibleFrame = visibleFrame
         self.isIce = isIce
+        configureWindowSizeConstraints(handleFrame: handleFrame, edge: edge)
 
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
@@ -98,6 +105,12 @@ final class MemoPanelController: NSWindowController {
         }
         updateRootView()
 
+        if let panel = window as? EdgeMemoPanel {
+            let bus = MemoMarkdownBus(documentID: note.id)
+            panel.onBold = { bus.post(bus.applyBoldRequest) }
+            panel.onItalic = { bus.post(bus.applyItalicRequest) }
+        }
+
         guard let window else { return }
         shouldBeVisible = true
         visibilityGeneration += 1
@@ -107,11 +120,11 @@ final class MemoPanelController: NSWindowController {
 
         if wasVisible {
             window.hasShadow = true
-            if window.frame != frame {
+            if window.frame != currentSurfaceFrame {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = EdgeLayoutEngine.panelSwitchDuration
                     context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-                    window.animator().setFrame(frame, display: true)
+                    window.animator().setFrame(currentSurfaceFrame, display: true)
                 }
             }
             if shouldFocusEditor {
@@ -120,12 +133,12 @@ final class MemoPanelController: NSWindowController {
             return
         }
 
-        window.setFrame(frame, display: false)
+        window.setFrame(currentSurfaceFrame, display: false)
         window.hasShadow = false
         window.orderFrontRegardless()
         animateContentMask(
-            from: revealAnchorRect(panelFrame: frame, handleFrame: handleFrame, edge: edge),
-            to: window.contentView?.bounds ?? CGRect(origin: .zero, size: frame.size),
+            from: revealAnchorRect(surfaceFrame: currentSurfaceFrame, handleFrame: handleFrame),
+            to: window.contentView?.bounds ?? CGRect(origin: .zero, size: currentSurfaceFrame.size),
             duration: transitionDuration(EdgeLayoutEngine.panelRevealDuration),
             generation: generation
         ) { [weak self] in
@@ -153,11 +166,18 @@ final class MemoPanelController: NSWindowController {
         edge: EdgeDock
     ) {
         currentEdge = edge
+        currentBodyFrame = frame
         currentHandleFrame = handleFrame
+        currentSurfaceFrame = EdgeLayoutEngine.unifiedSurfaceFrame(
+            bodyFrame: frame,
+            handleFrame: handleFrame
+        )
         currentScreenFrame = screenFrame
         currentVisibleFrame = visibleFrame
+        configureWindowSizeConstraints(handleFrame: handleFrame, edge: edge)
         guard let window, window.isVisible else { return }
-        window.setFrame(frame, display: true)
+        window.setFrame(currentSurfaceFrame, display: true)
+        updateRootView()
     }
 
     func fold(completion: (() -> Void)? = nil) {
@@ -174,9 +194,8 @@ final class MemoPanelController: NSWindowController {
         animateContentMask(
             from: window.contentView?.bounds ?? CGRect(origin: .zero, size: window.frame.size),
             to: revealAnchorRect(
-                panelFrame: window.frame,
-                handleFrame: currentHandleFrame,
-                edge: currentEdge
+                surfaceFrame: currentSurfaceFrame,
+                handleFrame: currentHandleFrame
             ),
             duration: transitionDuration(EdgeLayoutEngine.panelHideDuration),
             generation: generation
@@ -202,7 +221,14 @@ final class MemoPanelController: NSWindowController {
               let noteID,
               shouldBeVisible
         else { return }
-        onResize?(noteID, window.frame.size)
+        currentSurfaceFrame = window.frame
+        let size = EdgeLayoutEngine.bodySize(
+            fromSurfaceSize: window.frame.size,
+            handleSize: currentHandleFrame.size,
+            edge: currentEdge
+        )
+        currentBodyFrame.size = size
+        onResize?(noteID, size)
     }
 
     private func prepareContentSwitchTransition() {
@@ -215,20 +241,12 @@ final class MemoPanelController: NSWindowController {
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
     }
 
-    private func revealAnchorRect(
-        panelFrame: CGRect,
-        handleFrame: CGRect,
-        edge: EdgeDock
-    ) -> CGRect {
-        var anchor = EdgeLayoutEngine.panelRevealAnchorRect(
-            panelFrame: panelFrame,
-            handleFrame: handleFrame,
-            edge: edge
-        )
+    private func revealAnchorRect(surfaceFrame: CGRect, handleFrame: CGRect) -> CGRect {
+        var anchor = handleFrame.offsetBy(dx: -surfaceFrame.minX, dy: -surfaceFrame.minY)
         if window?.contentView?.isFlipped == true {
-            anchor.origin.y = panelFrame.height - anchor.maxY
+            anchor.origin.y = surfaceFrame.height - anchor.maxY
         }
-        return anchor
+        return anchor.intersection(CGRect(origin: .zero, size: surfaceFrame.size))
     }
 
     private func animateContentMask(
@@ -304,11 +322,45 @@ final class MemoPanelController: NSWindowController {
         }
     }
 
+    private func configureWindowSizeConstraints(handleFrame: CGRect, edge: EdgeDock) {
+        guard let window else { return }
+        switch edge {
+        case .left, .right:
+            window.minSize = CGSize(
+                width: MemoPanelSize.minimum.width + handleFrame.width,
+                height: MemoPanelSize.minimum.height
+            )
+            window.maxSize = CGSize(
+                width: MemoPanelSize.maximum.width + handleFrame.width,
+                height: MemoPanelSize.maximum.height
+            )
+        case .top:
+            window.minSize = CGSize(
+                width: MemoPanelSize.minimum.width,
+                height: MemoPanelSize.minimum.height + handleFrame.height
+            )
+            window.maxSize = CGSize(
+                width: MemoPanelSize.maximum.width,
+                height: MemoPanelSize.maximum.height + handleFrame.height
+            )
+        }
+    }
+
     private func updateRootView() {
         guard let viewModel else { return }
-        let rootView = EdgeMemoPanelView(
+        let handleOffset: CGFloat
+        switch currentEdge {
+        case .left, .right:
+            handleOffset = currentSurfaceFrame.maxY - currentHandleFrame.maxY
+        case .top:
+            handleOffset = currentHandleFrame.minX - currentSurfaceFrame.minX
+        }
+
+        let rootView = UnifiedEdgeMemoSurfaceView(
             viewModel: viewModel,
-            isIce: isIce,
+            edge: currentEdge,
+            handleSize: currentHandleFrame.size,
+            handleOffset: handleOffset,
             assetRootURL: assetRootURL,
             onImageUpload: { [weak self] data, originalName in
                 guard let self,
@@ -320,6 +372,14 @@ final class MemoPanelController: NSWindowController {
                 return try onImageUpload(noteID, data, originalName)
             },
             onRequestIce: { [weak self] in self?.onRequestIce?() },
+            onRequestFold: { [weak self] in
+                guard let self else { return }
+                if self.isIce {
+                    self.requestFold()
+                } else {
+                    self.onRequestIce?()
+                }
+            },
             onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) }
         )
 
@@ -335,19 +395,18 @@ final class MemoPanelController: NSWindowController {
 
     private func focusEditor() {
         guard let contentView = window?.contentView,
-              let webView = findWebView(in: contentView)
+              let textView = findTextView(in: contentView)
         else {
             return
         }
         window?.makeKeyAndOrderFront(nil)
-        window?.makeFirstResponder(webView)
-        webView.evaluateJavaScript("window.focusMemoEditor && window.focusMemoEditor();")
+        window?.makeFirstResponder(textView)
     }
 
-    private func findWebView(in view: NSView) -> WKWebView? {
-        if let webView = view as? WKWebView { return webView }
+    private func findTextView(in view: NSView) -> NSTextView? {
+        if let textView = view as? NSTextView { return textView }
         for subview in view.subviews {
-            if let webView = findWebView(in: subview) { return webView }
+            if let textView = findTextView(in: subview) { return textView }
         }
         return nil
     }
@@ -357,6 +416,8 @@ private final class EdgeMemoPanel: NSPanel {
     var onFold: (() -> Void)?
     var onCycle: ((Int) -> Void)?
     var onSelectIndex: ((Int) -> Void)?
+    var onBold: (() -> Void)?
+    var onItalic: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -367,6 +428,16 @@ private final class EdgeMemoPanel: NSPanel {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = KeyboardShortcuts.normalizedModifiers(for: event)
+
+        if flags == .command, event.keyCode == KeyboardShortcuts.KeyCode.b {
+            onBold?()
+            return true
+        }
+
+        if flags == .command, event.keyCode == KeyboardShortcuts.KeyCode.i {
+            onItalic?()
+            return true
+        }
 
         if event.keyCode == 53 {
             onFold?()

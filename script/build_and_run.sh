@@ -18,10 +18,6 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT_DIR"
-if [[ -f "$ROOT_DIR/package.json" ]]; then
-  npm run build:editor
-fi
-
 swift build
 BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
 
@@ -30,11 +26,6 @@ mkdir -p "$APP_MACOS"
 mkdir -p "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
-
-RESOURCE_BUNDLE="$(find "$(dirname "$BUILD_BINARY")" -maxdepth 1 -type d \( -name "${APP_NAME}_*.bundle" -o -name "${APP_NAME}_*.resources" \) | head -n 1)"
-if [[ -n "$RESOURCE_BUNDLE" ]]; then
-  cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/"
-fi
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

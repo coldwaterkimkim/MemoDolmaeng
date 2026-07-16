@@ -95,6 +95,38 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(panel.maxX, handle.midX)
     }
 
+    func testEdgeCreationControlsStayOnTheirPhysicalEdges() {
+        let rightHandles = [
+            CGRect(x: screen.maxX - 90, y: 420, width: 90, height: 26),
+            CGRect(x: screen.maxX - 110, y: 394, width: 110, height: 26)
+        ]
+        let right = EdgeLayoutEngine.edgeControlFrame(
+            edge: .right,
+            handleFrames: rightHandles,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        XCTAssertEqual(right.maxX, screen.maxX, accuracy: 0.001)
+        XCTAssertEqual(right.maxY, rightHandles.last!.minY - EdgeLayoutEngine.groupGap, accuracy: 0.001)
+
+        let topHandles = [CGRect(x: 500, y: visible.maxY - 26, width: 100, height: 26)]
+        let top = EdgeLayoutEngine.edgeControlFrame(
+            edge: .top,
+            handleFrames: topHandles,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        XCTAssertEqual(top.minX, topHandles[0].maxX + EdgeLayoutEngine.groupGap, accuracy: 0.001)
+        XCTAssertEqual(top.maxY, visible.maxY, accuracy: 0.001)
+    }
+
+    func testDeleteDropTargetIsCenteredAboveVisibleScreenBottom() {
+        let target = EdgeLayoutEngine.deleteDropFrame(visibleFrame: visible)
+        XCTAssertEqual(target.midX, visible.midX, accuracy: 0.001)
+        XCTAssertEqual(target.minY, visible.minY + 18, accuracy: 0.001)
+        XCTAssertTrue(visible.contains(target))
+    }
+
     func testSidePanelsAttachToPhysicalEdges() throws {
         for edge in [EdgeDock.left, .right] {
             let group = MemoEdgeGroup(edge: edge, normalizedCenter: 0.5)
@@ -139,6 +171,47 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertEqual(panel.size.width, 512, accuracy: 0.001)
         XCTAssertEqual(panel.size.height, 388, accuracy: 0.001)
         XCTAssertEqual(panel.maxX, handle.minX, accuracy: 0.001)
+    }
+
+    func testUnifiedSurfaceIncludesHandleAndRestoresBodySizeOnSideEdges() {
+        let body = CGRect(x: 100, y: 100, width: 340, height: 400)
+
+        for (edge, handle) in [
+            (EdgeDock.left, CGRect(x: 4, y: 474, width: 96, height: 26)),
+            (EdgeDock.right, CGRect(x: 440, y: 474, width: 96, height: 26))
+        ] {
+            let surface = EdgeLayoutEngine.unifiedSurfaceFrame(
+                bodyFrame: body,
+                handleFrame: handle
+            )
+            let restored = EdgeLayoutEngine.bodySize(
+                fromSurfaceSize: surface.size,
+                handleSize: handle.size,
+                edge: edge
+            )
+
+            XCTAssertEqual(surface, body.union(handle))
+            XCTAssertEqual(restored.width, body.width, accuracy: 0.001)
+            XCTAssertEqual(restored.height, body.height, accuracy: 0.001)
+        }
+    }
+
+    func testUnifiedTopSurfaceRestoresBodySizeWithoutAccumulatingHandleHeight() {
+        let body = CGRect(x: 100, y: 100, width: 340, height: 400)
+        let handle = CGRect(x: 220, y: 500, width: 100, height: 26)
+        let surface = EdgeLayoutEngine.unifiedSurfaceFrame(
+            bodyFrame: body,
+            handleFrame: handle
+        )
+        let restored = EdgeLayoutEngine.bodySize(
+            fromSurfaceSize: surface.size,
+            handleSize: handle.size,
+            edge: .top
+        )
+
+        XCTAssertEqual(surface, body.union(handle))
+        XCTAssertEqual(restored.width, body.width, accuracy: 0.001)
+        XCTAssertEqual(restored.height, body.height, accuracy: 0.001)
     }
 
     func testStoredPanelSizeIsClampedToVisibleScreen() {
@@ -347,23 +420,53 @@ final class EdgeScreenSelectorTests: XCTestCase {
 final class EdgePresentationReducerTests: XCTestCase {
     func testHoverOpensPeekAndClickPinsIce() {
         let id = UUID()
-        let opened = EdgePresentationReducer.reduce(state: .closed, action: .hover(id))
-        XCTAssertEqual(opened, .peek(id))
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: opened, action: .click(id)), .ice(id))
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(id), action: .click(id)), .closed)
+        let opened = EdgePresentationReducer.reduce(state: EdgePresentationState(), action: .hover(id))
+        XCTAssertEqual(opened.peekNoteID, id)
+
+        let pinned = EdgePresentationReducer.reduce(state: opened, action: .click(id))
+        XCTAssertNil(pinned.peekNoteID)
+        XCTAssertEqual(pinned.iceNoteIDs, [id])
+        XCTAssertFalse(EdgePresentationReducer.reduce(state: pinned, action: .click(id)).hasOpenPanels)
     }
 
-    func testIceSurvivesHoverAndClickSwitchesNotes() {
+    func testExistingIceSurvivesHoverAndSecondIce() {
         let first = UUID()
         let second = UUID()
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(first), action: .hover(second)), .ice(first))
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(first), action: .click(second)), .ice(second))
+        let initial = EdgePresentationState(iceNoteIDs: [first])
+        let previewed = EdgePresentationReducer.reduce(state: initial, action: .hover(second))
+        XCTAssertEqual(previewed.peekNoteID, second)
+        XCTAssertEqual(previewed.iceNoteIDs, [first])
+
+        let pinned = EdgePresentationReducer.reduce(state: previewed, action: .click(second))
+        XCTAssertNil(pinned.peekNoteID)
+        XCTAssertEqual(pinned.iceNoteIDs, [first, second])
+        XCTAssertTrue(pinned.isIce(first))
+        XCTAssertTrue(pinned.isIce(second))
     }
 
     func testDoubleClickAndModeToggle() {
         let id = UUID()
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: .closed, action: .doubleClick(id)), .ice(id))
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(id), action: .toggleMode), .peek(id))
+        let pinned = EdgePresentationReducer.reduce(
+            state: EdgePresentationState(),
+            action: .doubleClick(id)
+        )
+        XCTAssertEqual(pinned.iceNoteIDs, [id])
+        let peeked = EdgePresentationReducer.reduce(state: pinned, action: .toggleMode)
+        XCTAssertEqual(peeked.peekNoteID, id)
+        XCTAssertTrue(peeked.iceNoteIDs.isEmpty)
+    }
+
+    func testFocusAndCloseAffectOnlyRequestedIce() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let state = EdgePresentationState(iceNoteIDs: [first, second, third])
+
+        let focused = EdgePresentationReducer.reduce(state: state, action: .focus(first))
+        XCTAssertEqual(focused.iceNoteIDs, [second, third, first])
+
+        let closed = EdgePresentationReducer.reduce(state: focused, action: .close(third))
+        XCTAssertEqual(closed.iceNoteIDs, [second, first])
     }
 }
 
@@ -430,9 +533,9 @@ final class MemoAssetSchemeHandlerTests: XCTestCase {
     }
 
     @MainActor
-    func testCrepeImageUploadAcceptsRealImagesAndRejectsUnsafeInput() throws {
+    func testNativeImageImportAcceptsRealImagesAndRejectsUnsafeInput() throws {
         let storage = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MemoDolmaengCrepeUpload-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("MemoDolmaengNativeImageUpload-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: storage) }
         let service = AttachmentService(storageDirectory: storage)
         let noteID = UUID()
@@ -442,10 +545,10 @@ final class MemoAssetSchemeHandlerTests: XCTestCase {
 
         let imported = try service.importImage(
             data: imageData,
-            originalName: "crepe.png",
+            originalName: "native-editor.png",
             noteID: noteID
         )
-        XCTAssertEqual(imported.originalName, "crepe.png")
+        XCTAssertEqual(imported.originalName, "native-editor.png")
         XCTAssertEqual(imported.assetURL.scheme, MemoAssetSchemeHandler.scheme)
         XCTAssertTrue(
             FileManager.default.fileExists(

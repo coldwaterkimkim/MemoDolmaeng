@@ -24,6 +24,8 @@ enum EdgeLayoutEngine {
     static let indexSlideDistance: CGFloat = 14
     static let panelCornerRadius: CGFloat = 10
     static let handleCornerRadius: CGFloat = 9
+    static let edgeControlSize = CGSize(width: 34, height: 26)
+    static let deleteDropSize = CGSize(width: 76, height: 54)
 
     static func sideHandleWidth(for title: String) -> CGFloat {
         let count = max(1, min(MemoNote.maxTitleLength, title.count))
@@ -32,6 +34,54 @@ enum EdgeLayoutEngine {
 
     static func topHandleWidth(for title: String) -> CGFloat {
         max(64, min(240, CGFloat(max(1, min(MemoNote.maxTitleLength, title.count)) * 11 + 20)))
+    }
+
+    static func edgeControlFrame(
+        edge: EdgeDock,
+        handleFrames: [CGRect],
+        screenFrame: CGRect,
+        visibleFrame: CGRect
+    ) -> CGRect {
+        let size = edgeControlSize
+        switch edge {
+        case .left, .right:
+            let x = edge == .right ? screenFrame.maxX - size.width : screenFrame.minX
+            guard let union = handleFrames.first.map({ first in
+                handleFrames.dropFirst().reduce(first) { $0.union($1) }
+            }) else {
+                return CGRect(x: x, y: visibleFrame.midY - size.height / 2, width: size.width, height: size.height)
+            }
+            let below = union.minY - groupGap - size.height
+            let y = below >= visibleFrame.minY
+                ? below
+                : min(visibleFrame.maxY - size.height, union.maxY + groupGap)
+            return CGRect(x: x, y: y, width: size.width, height: size.height)
+        case .top:
+            guard let union = handleFrames.first.map({ first in
+                handleFrames.dropFirst().reduce(first) { $0.union($1) }
+            }) else {
+                return CGRect(
+                    x: visibleFrame.midX - size.width / 2,
+                    y: visibleFrame.maxY - size.height,
+                    width: size.width,
+                    height: size.height
+                )
+            }
+            let after = union.maxX + groupGap
+            let x = after + size.width <= visibleFrame.maxX
+                ? after
+                : max(visibleFrame.minX, union.minX - groupGap - size.width)
+            return CGRect(x: x, y: visibleFrame.maxY - size.height, width: size.width, height: size.height)
+        }
+    }
+
+    static func deleteDropFrame(visibleFrame: CGRect) -> CGRect {
+        CGRect(
+            x: visibleFrame.midX - deleteDropSize.width / 2,
+            y: visibleFrame.minY + 18,
+            width: deleteDropSize.width,
+            height: deleteDropSize.height
+        )
     }
 
     static func layout(
@@ -178,6 +228,34 @@ enum EdgeLayoutEngine {
             let y = max(visibleFrame.minY, handleFrame.minY - height)
             return CGRect(x: x, y: y, width: width, height: height)
         }
+    }
+
+    static func unifiedSurfaceFrame(bodyFrame: CGRect, handleFrame: CGRect) -> CGRect {
+        bodyFrame.union(handleFrame)
+    }
+
+    static func bodySize(
+        fromSurfaceSize surfaceSize: CGSize,
+        handleSize: CGSize,
+        edge: EdgeDock
+    ) -> CGSize {
+        let rawSize: CGSize
+        switch edge {
+        case .left, .right:
+            rawSize = CGSize(
+                width: surfaceSize.width - handleSize.width,
+                height: surfaceSize.height
+            )
+        case .top:
+            rawSize = CGSize(
+                width: surfaceSize.width,
+                height: surfaceSize.height - handleSize.height
+            )
+        }
+        return CGSize(
+            width: min(MemoPanelSize.maximum.width, max(MemoPanelSize.minimum.width, rawSize.width)),
+            height: min(MemoPanelSize.maximum.height, max(MemoPanelSize.minimum.height, rawSize.height))
+        )
     }
 
     static func collapsedPanelFrame(

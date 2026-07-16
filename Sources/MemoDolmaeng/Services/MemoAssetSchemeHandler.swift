@@ -1,42 +1,7 @@
 import Foundation
-import UniformTypeIdentifiers
-import WebKit
 
-final class MemoAssetSchemeHandler: NSObject, WKURLSchemeHandler {
+enum MemoAssetSchemeHandler {
     static let scheme = "memodolmaeng-asset"
-
-    private let rootURL: URL
-
-    init(rootURL: URL) {
-        self.rootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-    }
-
-    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        guard let url = urlSchemeTask.request.url,
-              let candidate = Self.resolvedFileURL(for: url, rootURL: rootURL)
-        else {
-            fail(urlSchemeTask, code: .noPermissionsToReadFile)
-            return
-        }
-
-        do {
-            let data = try Data(contentsOf: candidate)
-            let mimeType = UTType(filenameExtension: candidate.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            let response = URLResponse(
-                url: url,
-                mimeType: mimeType,
-                expectedContentLength: data.count,
-                textEncodingName: nil
-            )
-            urlSchemeTask.didReceive(response)
-            urlSchemeTask.didReceive(data)
-            urlSchemeTask.didFinish()
-        } catch {
-            fail(urlSchemeTask, code: .fileDoesNotExist)
-        }
-    }
-
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 
     static func resolvedFileURL(for requestURL: URL, rootURL: URL) -> URL? {
         guard requestURL.scheme == scheme,
@@ -67,9 +32,5 @@ final class MemoAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             .resolvingSymlinksInPath()
         guard candidate.path.hasPrefix(resolvedRoot.path + "/") else { return nil }
         return candidate
-    }
-
-    private func fail(_ task: WKURLSchemeTask, code: URLError.Code) {
-        task.didFailWithError(URLError(code))
     }
 }
