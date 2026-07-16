@@ -90,7 +90,8 @@ final class EdgeLayoutEngineTests: XCTestCase {
 
         XCTAssertEqual(handle.maxY, visible.maxY, accuracy: 0.001)
         XCTAssertEqual(handle.height, 26, accuracy: 0.001)
-        XCTAssertEqual(panel.maxY, handle.minY, accuracy: 0.001)
+        XCTAssertEqual(panel.maxY, handle.maxY, accuracy: 0.001)
+        XCTAssertLessThan(panel.minY, handle.minY)
         XCTAssertLessThanOrEqual(panel.minX, handle.midX)
         XCTAssertGreaterThanOrEqual(panel.maxX, handle.midX)
     }
@@ -148,11 +149,14 @@ final class EdgeLayoutEngineTests: XCTestCase {
             )
             if edge == .left {
                 XCTAssertEqual(handle.minX, screen.minX, accuracy: 0.001)
-                XCTAssertEqual(panel.minX, handle.maxX, accuracy: 0.001)
+                XCTAssertEqual(panel.minX, screen.minX, accuracy: 0.001)
             } else {
                 XCTAssertEqual(handle.maxX, screen.maxX, accuracy: 0.001)
-                XCTAssertEqual(panel.maxX, handle.minX, accuracy: 0.001)
+                XCTAssertEqual(panel.maxX, screen.maxX, accuracy: 0.001)
             }
+            XCTAssertLessThan(panel.minY, handle.minY)
+            XCTAssertGreaterThanOrEqual(panel.minY, visible.minY)
+            XCTAssertLessThanOrEqual(panel.maxY, visible.maxY)
         }
     }
 
@@ -170,96 +174,105 @@ final class EdgeLayoutEngineTests: XCTestCase {
 
         XCTAssertEqual(panel.size.width, 512, accuracy: 0.001)
         XCTAssertEqual(panel.size.height, 388, accuracy: 0.001)
-        XCTAssertEqual(panel.maxX, handle.minX, accuracy: 0.001)
+        XCTAssertEqual(panel.maxX, screen.maxX, accuracy: 0.001)
     }
 
-    func testUnifiedSurfaceIncludesHandleAndRestoresBodySizeOnSideEdges() {
-        let body = CGRect(x: 100, y: 100, width: 340, height: 400)
+    func testPanelExpansionKeepsTheIndexOuterEdgeAndGrowsDownward() {
+        let cases: [(EdgeDock, CGRect)] = [
+            (.left, CGRect(x: screen.minX, y: 500, width: 96, height: 26)),
+            (.right, CGRect(x: screen.maxX - 96, y: 500, width: 96, height: 26)),
+            (.top, CGRect(x: 600, y: visible.maxY - 26, width: 100, height: 26))
+        ]
 
-        for (edge, handle) in [
-            (EdgeDock.left, CGRect(x: 4, y: 474, width: 96, height: 26)),
-            (EdgeDock.right, CGRect(x: 440, y: 474, width: 96, height: 26))
-        ] {
-            let surface = EdgeLayoutEngine.unifiedSurfaceFrame(
-                bodyFrame: body,
-                handleFrame: handle
-            )
-            let restored = EdgeLayoutEngine.bodySize(
-                fromSurfaceSize: surface.size,
-                handleSize: handle.size,
-                edge: edge
+        for (edge, handle) in cases {
+            let panel = EdgeLayoutEngine.panelFrame(
+                adjacentTo: handle,
+                screenFrame: screen,
+                visibleFrame: visible,
+                edge: edge,
+                aspectRatio: 1,
+                panelSize: MemoPanelSize(width: 340, height: 340)
             )
 
-            XCTAssertEqual(surface, body.union(handle))
-            XCTAssertEqual(restored.width, body.width, accuracy: 0.001)
-            XCTAssertEqual(restored.height, body.height, accuracy: 0.001)
+            if edge == .left {
+                XCTAssertEqual(panel.minX, handle.minX, accuracy: 0.001)
+            } else if edge == .right {
+                XCTAssertEqual(panel.maxX, handle.maxX, accuracy: 0.001)
+            } else {
+                XCTAssertEqual(panel.maxY, handle.maxY, accuracy: 0.001)
+            }
+            XCTAssertEqual(panel.maxY, handle.maxY, accuracy: 0.001)
+            XCTAssertLessThan(panel.minY, handle.minY)
+            XCTAssertEqual(panel.size, CGSize(width: 340, height: 340))
         }
     }
 
-    func testUnifiedTopSurfaceRestoresBodySizeWithoutAccumulatingHandleHeight() {
-        let body = CGRect(x: 100, y: 100, width: 340, height: 400)
-        let handle = CGRect(x: 220, y: 500, width: 100, height: 26)
-        let surface = EdgeLayoutEngine.unifiedSurfaceFrame(
-            bodyFrame: body,
-            handleFrame: handle
-        )
-        let restored = EdgeLayoutEngine.bodySize(
-            fromSurfaceSize: surface.size,
-            handleSize: handle.size,
-            edge: .top
-        )
-
-        XCTAssertEqual(surface, body.union(handle))
-        XCTAssertEqual(restored.width, body.width, accuracy: 0.001)
-        XCTAssertEqual(restored.height, body.height, accuracy: 0.001)
-    }
-
-    func testStoredPanelSizeIsClampedToVisibleScreen() {
+    func testStoredPanelSizeIsClampedToPhysicalWidthAndSpaceBelowItsTitle() {
         let tinyVisible = CGRect(x: 0, y: 0, width: 260, height: 210)
-        let handle = CGRect(x: 260, y: 100, width: 80, height: 26)
+        let tinyScreen = CGRect(x: 0, y: 0, width: 340, height: 210)
+        let handle = CGRect(x: 0, y: 100, width: 80, height: 26)
         let panel = EdgeLayoutEngine.panelFrame(
             adjacentTo: handle,
-            screenFrame: CGRect(x: 0, y: 0, width: 340, height: 210),
+            screenFrame: tinyScreen,
             visibleFrame: tinyVisible,
             edge: .left,
             aspectRatio: MemoAspectRatio.portrait.value,
             panelSize: MemoPanelSize(width: 720, height: 900)
         )
 
-        XCTAssertEqual(panel.width, tinyVisible.width, accuracy: 0.001)
-        XCTAssertEqual(panel.height, tinyVisible.height, accuracy: 0.001)
+        XCTAssertEqual(panel.width, tinyScreen.width, accuracy: 0.001)
+        XCTAssertEqual(panel.height, handle.maxY - tinyVisible.minY, accuracy: 0.001)
         XCTAssertGreaterThanOrEqual(panel.minY, tinyVisible.minY)
         XCTAssertLessThanOrEqual(panel.maxY, tinyVisible.maxY)
     }
 
-    func testPanelRevealAnchorsTouchEachHandleEdge() {
-        let panel = CGRect(x: 100, y: 100, width: 340, height: 400)
+    func testExpandedTitleBarContainsItsOriginalIndexAcrossEdgesAndSizes() {
+        let sideYValues = [visible.minY + 14, visible.midY, visible.maxY - 26]
+        let sideWidths: [CGFloat] = [64, 320]
+        let panelWidths: [CGFloat] = [280, 720]
 
-        let right = EdgeLayoutEngine.panelRevealAnchorRect(
-            panelFrame: panel,
-            handleFrame: CGRect(x: 440, y: 474, width: 90, height: 26),
-            edge: .right
-        )
-        XCTAssertEqual(right.maxX, panel.width, accuracy: 0.001)
-        XCTAssertEqual(right.minY, 374, accuracy: 0.001)
-        XCTAssertEqual(right.height, 26, accuracy: 0.001)
+        for edge in [EdgeDock.left, .right] {
+            for y in sideYValues {
+                for handleWidth in sideWidths {
+                    for panelWidth in panelWidths {
+                        let handleX = edge == .right ? screen.maxX - handleWidth : screen.minX
+                        let handle = CGRect(x: handleX, y: y, width: handleWidth, height: 26)
+                        let panel = EdgeLayoutEngine.panelFrame(
+                            adjacentTo: handle,
+                            screenFrame: screen,
+                            visibleFrame: visible,
+                            edge: edge,
+                            aspectRatio: 1,
+                            panelSize: MemoPanelSize(width: panelWidth, height: 340)
+                        )
+                        let titleBar = EdgeLayoutEngine.panelTitleBarFrame(in: panel)
 
-        let left = EdgeLayoutEngine.panelRevealAnchorRect(
-            panelFrame: panel,
-            handleFrame: CGRect(x: 10, y: 250, width: 90, height: 26),
-            edge: .left
-        )
-        XCTAssertEqual(left.minX, 0, accuracy: 0.001)
-        XCTAssertEqual(left.minY, 150, accuracy: 0.001)
+                        XCTAssertTrue(
+                            titleBar.contains(handle),
+                            "\(edge) title bar \(titleBar) must contain index \(handle)"
+                        )
+                    }
+                }
+            }
+        }
 
-        let top = EdgeLayoutEngine.panelRevealAnchorRect(
-            panelFrame: panel,
-            handleFrame: CGRect(x: 220, y: 500, width: 100, height: 26),
-            edge: .top
-        )
-        XCTAssertEqual(top.minX, 120, accuracy: 0.001)
-        XCTAssertEqual(top.maxY, panel.height, accuracy: 0.001)
-        XCTAssertEqual(top.width, 100, accuracy: 0.001)
+        for handleWidth in sideWidths {
+            let handle = CGRect(
+                x: visible.maxX - handleWidth,
+                y: visible.maxY - 26,
+                width: handleWidth,
+                height: 26
+            )
+            let panel = EdgeLayoutEngine.panelFrame(
+                adjacentTo: handle,
+                screenFrame: screen,
+                visibleFrame: visible,
+                edge: .top,
+                aspectRatio: 1,
+                panelSize: MemoPanelSize(width: 280, height: 340)
+            )
+            XCTAssertTrue(EdgeLayoutEngine.panelTitleBarFrame(in: panel).contains(handle))
+        }
     }
 
     func testHiddenFramesMoveOutwardFromEachEdge() {

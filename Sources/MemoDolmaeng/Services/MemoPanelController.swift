@@ -1,4 +1,5 @@
 import AppKit
+import MarkdownEngine
 import QuartzCore
 import SwiftUI
 
@@ -7,15 +8,14 @@ final class MemoPanelController: NSWindowController {
     private let assetRootURL: URL
     private var hostingController: NSHostingController<UnifiedEdgeMemoSurfaceView>?
     private var viewModel: NoteEditorViewModel?
-    private var currentEdge: EdgeDock = .right
     private var currentBodyFrame: CGRect = .zero
     private var currentHandleFrame: CGRect = .zero
-    private var currentSurfaceFrame: CGRect = .zero
-    private var currentScreenFrame: CGRect = .zero
-    private var currentVisibleFrame: CGRect = .zero
-    private var isIce = false
     private var shouldBeVisible = false
     private var visibilityGeneration = 0
+    private var titleDragOffset: NSPoint?
+    private var isUserResizing = false
+    private var suppressResizePersistence = false
+    private var resizeSuppressionGeneration = 0
 
     var noteID: UUID? { viewModel?.noteID }
     var onFold: (() -> Void)?
@@ -25,6 +25,9 @@ final class MemoPanelController: NSWindowController {
     var onCycle: ((Int) -> Void)?
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
+    var onDragBegan: (() -> Void)?
+    var onDragChanged: ((NSPoint) -> Void)?
+    var onDragFinished: ((NSPoint) -> Void)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -54,6 +57,12 @@ final class MemoPanelController: NSWindowController {
         panel.onSelectIndex = { [weak self] index in self?.onSelectIndex?(index) }
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(panelWillStartLiveResize(_:)),
+            name: NSWindow.willStartLiveResizeNotification,
+            object: panel
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(panelDidEndLiveResize(_:)),
             name: NSWindow.didEndLiveResizeNotification,
             object: panel
@@ -72,23 +81,13 @@ final class MemoPanelController: NSWindowController {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        isIce: Bool,
+        isIce _: Bool,
         focusEditor shouldFocusEditor: Bool = true,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
     ) {
-        currentEdge = edge
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
-        currentSurfaceFrame = EdgeLayoutEngine.unifiedSurfaceFrame(
-            bodyFrame: frame,
-            handleFrame: handleFrame
-        )
-        currentScreenFrame = screenFrame
-        currentVisibleFrame = visibleFrame
-        self.isIce = isIce
-        configureWindowSizeConstraints(handleFrame: handleFrame, edge: edge)
-
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
         let isSwitchingNotes = wasVisible && previousNoteID != nil && previousNoteID != note.id
@@ -115,16 +114,17 @@ final class MemoPanelController: NSWindowController {
         shouldBeVisible = true
         visibilityGeneration += 1
         let generation = visibilityGeneration
-        clearContentMask()
         window.alphaValue = 1
 
         if wasVisible {
             window.hasShadow = true
-            if window.frame != currentSurfaceFrame {
+            configureWindowSizeConstraints()
+            if window.frame != currentBodyFrame {
+                suppressResizePersistence(for: EdgeLayoutEngine.panelSwitchDuration)
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = EdgeLayoutEngine.panelSwitchDuration
                     context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-                    window.animator().setFrame(currentSurfaceFrame, display: true)
+                    window.animator().setFrame(currentBodyFrame, display: true)
                 }
             }
             if shouldFocusEditor {
@@ -133,27 +133,29 @@ final class MemoPanelController: NSWindowController {
             return
         }
 
-        window.setFrame(currentSurfaceFrame, display: false)
+        suppressResizePersistence(for: transitionDuration(EdgeLayoutEngine.panelRevealDuration))
+        allowTransitionSizing()
+        window.setFrame(currentHandleFrame, display: false)
         window.hasShadow = false
         window.orderFrontRegardless()
-        animateContentMask(
-            from: revealAnchorRect(surfaceFrame: currentSurfaceFrame, handleFrame: handleFrame),
-            to: window.contentView?.bounds ?? CGRect(origin: .zero, size: currentSurfaceFrame.size),
-            duration: transitionDuration(EdgeLayoutEngine.panelRevealDuration),
-            generation: generation
-        ) { [weak self] in
-            guard let self,
-                  self.shouldBeVisible,
-                  self.visibilityGeneration == generation
-            else { return }
-            window.hasShadow = true
-            self.clearContentMask()
-            if shouldFocusEditor { self.focusEditor() }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = transitionDuration(EdgeLayoutEngine.panelRevealDuration)
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+            window.animator().setFrame(currentBodyFrame, display: true)
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self,
+                      self.shouldBeVisible,
+                      self.visibilityGeneration == generation
+                else { return }
+                self.configureWindowSizeConstraints()
+                window.hasShadow = true
+                if shouldFocusEditor { self.focusEditor() }
+            }
         }
     }
 
-    func refresh(note: MemoNote, isIce: Bool) {
-        self.isIce = isIce
+    func refresh(note: MemoNote, isIce _: Bool) {
         viewModel?.sync(note: note)
         updateRootView()
     }
@@ -165,22 +167,19 @@ final class MemoPanelController: NSWindowController {
         visibleFrame: CGRect,
         edge: EdgeDock
     ) {
-        currentEdge = edge
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
-        currentSurfaceFrame = EdgeLayoutEngine.unifiedSurfaceFrame(
-            bodyFrame: frame,
-            handleFrame: handleFrame
-        )
-        currentScreenFrame = screenFrame
-        currentVisibleFrame = visibleFrame
-        configureWindowSizeConstraints(handleFrame: handleFrame, edge: edge)
+        configureWindowSizeConstraints()
         guard let window, window.isVisible else { return }
-        window.setFrame(currentSurfaceFrame, display: true)
+        suppressResizePersistence(for: 0.08)
+        window.setFrame(currentBodyFrame, display: true)
         updateRootView()
     }
 
-    func fold(completion: (() -> Void)? = nil) {
+    func fold(
+        beforeOrderOut: (() -> Void)? = nil,
+        completion: (() -> Void)? = nil
+    ) {
         shouldBeVisible = false
         visibilityGeneration += 1
         let generation = visibilityGeneration
@@ -190,25 +189,24 @@ final class MemoPanelController: NSWindowController {
         }
 
         window.hasShadow = false
-        clearContentMask()
-        animateContentMask(
-            from: window.contentView?.bounds ?? CGRect(origin: .zero, size: window.frame.size),
-            to: revealAnchorRect(
-                surfaceFrame: currentSurfaceFrame,
-                handleFrame: currentHandleFrame
-            ),
-            duration: transitionDuration(EdgeLayoutEngine.panelHideDuration),
-            generation: generation
-        ) { [weak self] in
-            guard let self,
-                  !self.shouldBeVisible,
-                  self.visibilityGeneration == generation
-            else { return }
-            window.orderOut(nil)
-            window.alphaValue = 1
-            window.hasShadow = true
-            self.clearContentMask()
-            completion?()
+        suppressResizePersistence(for: transitionDuration(EdgeLayoutEngine.panelHideDuration))
+        allowTransitionSizing()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = transitionDuration(EdgeLayoutEngine.panelHideDuration)
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
+            window.animator().setFrame(currentHandleFrame, display: true)
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self,
+                      !self.shouldBeVisible,
+                      self.visibilityGeneration == generation
+                else { return }
+                beforeOrderOut?()
+                window.orderOut(nil)
+                window.alphaValue = 1
+                window.hasShadow = true
+                completion?()
+            }
         }
     }
 
@@ -216,17 +214,25 @@ final class MemoPanelController: NSWindowController {
         onFold?()
     }
 
+    @objc private func panelWillStartLiveResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window,
+              !suppressResizePersistence
+        else { return }
+        isUserResizing = true
+    }
+
     @objc private func panelDidEndLiveResize(_ notification: Notification) {
+        guard isUserResizing else { return }
+        isUserResizing = false
         guard let window = notification.object as? NSWindow,
               let noteID,
               shouldBeVisible
         else { return }
-        currentSurfaceFrame = window.frame
-        let size = EdgeLayoutEngine.bodySize(
-            fromSurfaceSize: window.frame.size,
-            handleSize: currentHandleFrame.size,
-            edge: currentEdge
+        let size = CGSize(
+            width: min(MemoPanelSize.maximum.width, max(MemoPanelSize.minimum.width, window.frame.width)),
+            height: min(MemoPanelSize.maximum.height, max(MemoPanelSize.minimum.height, window.frame.height))
         )
+        currentBodyFrame = window.frame
         currentBodyFrame.size = size
         onResize?(noteID, size)
     }
@@ -241,75 +247,6 @@ final class MemoPanelController: NSWindowController {
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
     }
 
-    private func revealAnchorRect(surfaceFrame: CGRect, handleFrame: CGRect) -> CGRect {
-        var anchor = handleFrame.offsetBy(dx: -surfaceFrame.minX, dy: -surfaceFrame.minY)
-        if window?.contentView?.isFlipped == true {
-            anchor.origin.y = surfaceFrame.height - anchor.maxY
-        }
-        return anchor.intersection(CGRect(origin: .zero, size: surfaceFrame.size))
-    }
-
-    private func animateContentMask(
-        from startRect: CGRect,
-        to endRect: CGRect,
-        duration: TimeInterval,
-        generation: Int,
-        completion: @escaping @MainActor () -> Void
-    ) {
-        guard let contentView = window?.contentView else {
-            completion()
-            return
-        }
-        contentView.wantsLayer = true
-        guard let contentLayer = contentView.layer else {
-            completion()
-            return
-        }
-
-        let maskLayer = CAShapeLayer()
-        maskLayer.frame = contentView.bounds
-        maskLayer.fillColor = NSColor.black.cgColor
-        let startPath = maskPath(for: startRect)
-        let endPath = maskPath(for: endRect)
-        maskLayer.path = endPath
-        contentLayer.mask = maskLayer
-
-        let animation = CABasicAnimation(keyPath: "path")
-        animation.fromValue = startPath
-        animation.toValue = endPath
-        animation.duration = duration
-        animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-        maskLayer.add(animation, forKey: "memoPanelReveal")
-
-        Task { @MainActor [weak self, weak maskLayer] in
-            try? await Task.sleep(for: .seconds(duration))
-            guard let self,
-                  self.visibilityGeneration == generation,
-                  self.window?.contentView?.layer?.mask === maskLayer
-            else { return }
-            completion()
-        }
-    }
-
-    private func maskPath(for rect: CGRect) -> CGPath {
-        let radius = min(
-            EdgeLayoutEngine.panelCornerRadius,
-            max(1, min(rect.width, rect.height) / 2)
-        )
-        return CGPath(
-            roundedRect: rect,
-            cornerWidth: radius,
-            cornerHeight: radius,
-            transform: nil
-        )
-    }
-
-    private func clearContentMask() {
-        guard let layer = window?.contentView?.layer else { return }
-        layer.mask?.removeAllAnimations()
-        layer.mask = nil
-    }
-
     private func transitionDuration(_ duration: TimeInterval) -> TimeInterval {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.08 : duration
     }
@@ -322,45 +259,39 @@ final class MemoPanelController: NSWindowController {
         }
     }
 
-    private func configureWindowSizeConstraints(handleFrame: CGRect, edge: EdgeDock) {
+    private func configureWindowSizeConstraints() {
         guard let window else { return }
-        switch edge {
-        case .left, .right:
-            window.minSize = CGSize(
-                width: MemoPanelSize.minimum.width + handleFrame.width,
-                height: MemoPanelSize.minimum.height
-            )
-            window.maxSize = CGSize(
-                width: MemoPanelSize.maximum.width + handleFrame.width,
-                height: MemoPanelSize.maximum.height
-            )
-        case .top:
-            window.minSize = CGSize(
-                width: MemoPanelSize.minimum.width,
-                height: MemoPanelSize.minimum.height + handleFrame.height
-            )
-            window.maxSize = CGSize(
-                width: MemoPanelSize.maximum.width,
-                height: MemoPanelSize.maximum.height + handleFrame.height
-            )
+        window.minSize = CGSize(
+            width: min(MemoPanelSize.minimum.width, currentBodyFrame.width),
+            height: min(MemoPanelSize.minimum.height, currentBodyFrame.height)
+        )
+        window.maxSize = MemoPanelSize.maximum
+    }
+
+    private func allowTransitionSizing() {
+        guard let window else { return }
+        window.minSize = CGSize(width: 1, height: 1)
+        window.maxSize = CGSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
+
+    private func suppressResizePersistence(for duration: TimeInterval) {
+        resizeSuppressionGeneration += 1
+        let generation = resizeSuppressionGeneration
+        suppressResizePersistence = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.05, duration + 0.05)))
+            guard let self, self.resizeSuppressionGeneration == generation else { return }
+            self.suppressResizePersistence = false
         }
     }
 
     private func updateRootView() {
         guard let viewModel else { return }
-        let handleOffset: CGFloat
-        switch currentEdge {
-        case .left, .right:
-            handleOffset = currentSurfaceFrame.maxY - currentHandleFrame.maxY
-        case .top:
-            handleOffset = currentHandleFrame.minX - currentSurfaceFrame.minX
-        }
-
         let rootView = UnifiedEdgeMemoSurfaceView(
             viewModel: viewModel,
-            edge: currentEdge,
-            handleSize: currentHandleFrame.size,
-            handleOffset: handleOffset,
             assetRootURL: assetRootURL,
             onImageUpload: { [weak self] data, originalName in
                 guard let self,
@@ -372,15 +303,11 @@ final class MemoPanelController: NSWindowController {
                 return try onImageUpload(noteID, data, originalName)
             },
             onRequestIce: { [weak self] in self?.onRequestIce?() },
-            onRequestFold: { [weak self] in
-                guard let self else { return }
-                if self.isIce {
-                    self.requestFold()
-                } else {
-                    self.onRequestIce?()
-                }
-            },
-            onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) }
+            onRequestFold: { [weak self] in self?.requestFold() },
+            onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) },
+            onTitleDragBegan: { [weak self] point in self?.beginTitleDrag(at: point) },
+            onTitleDragChanged: { [weak self] point in self?.continueTitleDrag(at: point) },
+            onTitleDragEnded: { [weak self] point in self?.finishTitleDrag(at: point) }
         )
 
         if let hostingController {
@@ -403,8 +330,35 @@ final class MemoPanelController: NSWindowController {
         window?.makeFirstResponder(textView)
     }
 
+    private func beginTitleDrag(at point: NSPoint) {
+        guard let window, window.isVisible else { return }
+        titleDragOffset = NSPoint(
+            x: point.x - window.frame.minX,
+            y: point.y - window.frame.minY
+        )
+        onDragBegan?()
+    }
+
+    private func continueTitleDrag(at point: NSPoint) {
+        guard let window, let titleDragOffset else { return }
+        window.setFrameOrigin(NSPoint(
+            x: point.x - titleDragOffset.x,
+            y: point.y - titleDragOffset.y
+        ))
+        onDragChanged?(point)
+    }
+
+    private func finishTitleDrag(at point: NSPoint) {
+        guard titleDragOffset != nil else { return }
+        titleDragOffset = nil
+        onDragFinished?(point)
+    }
+
     private func findTextView(in view: NSView) -> NSTextView? {
-        if let textView = view as? NSTextView { return textView }
+        if let textView = view as? NSTextView,
+           textView.delegate is NativeTextViewCoordinator {
+            return textView
+        }
         for subview in view.subviews {
             if let textView = findTextView(in: subview) { return textView }
         }

@@ -24,6 +24,7 @@ enum EdgeLayoutEngine {
     static let indexSlideDistance: CGFloat = 14
     static let panelCornerRadius: CGFloat = 10
     static let handleCornerRadius: CGFloat = 9
+    static let titleBarHeight: CGFloat = 40
     static let edgeControlSize = CGSize(width: 34, height: 26)
     static let deleteDropSize = CGSize(width: 76, height: 54)
 
@@ -203,10 +204,13 @@ enum EdgeLayoutEngine {
         aspectRatio: CGFloat,
         panelSize: MemoPanelSize? = nil
     ) -> CGRect {
-        let maximumWidth = max(1, min(MemoPanelSize.maximum.width, visibleFrame.width))
+        let maximumWidth = max(1, min(MemoPanelSize.maximum.width, screenFrame.width))
         let minimumWidth = min(MemoPanelSize.minimum.width, maximumWidth)
         let requestedWidth = panelSize?.cgSize.width ?? panelWidth
-        let width = min(maximumWidth, max(minimumWidth, requestedWidth))
+        let width = min(
+            maximumWidth,
+            max(minimumWidth, max(requestedWidth, handleFrame.width))
+        )
 
         let maximumHeight = max(1, min(MemoPanelSize.maximum.height, visibleFrame.height))
         let minimumHeight = min(MemoPanelSize.minimum.height, maximumHeight)
@@ -215,46 +219,40 @@ enum EdgeLayoutEngine {
 
         switch edge {
         case .right:
-            let y = min(max(handleFrame.maxY - height, visibleFrame.minY), visibleFrame.maxY - height)
-            return CGRect(x: handleFrame.minX - width, y: y, width: width, height: height)
+            let availableHeight = max(titleBarHeight, handleFrame.maxY - visibleFrame.minY)
+            let dockedHeight = min(height, availableHeight)
+            return CGRect(
+                x: screenFrame.maxX - width,
+                y: handleFrame.maxY - dockedHeight,
+                width: width,
+                height: dockedHeight
+            )
         case .left:
-            let y = min(max(handleFrame.maxY - height, visibleFrame.minY), visibleFrame.maxY - height)
-            return CGRect(x: handleFrame.maxX, y: y, width: width, height: height)
+            let availableHeight = max(titleBarHeight, handleFrame.maxY - visibleFrame.minY)
+            let dockedHeight = min(height, availableHeight)
+            return CGRect(
+                x: screenFrame.minX,
+                y: handleFrame.maxY - dockedHeight,
+                width: width,
+                height: dockedHeight
+            )
         case .top:
             let x = min(
                 max(handleFrame.midX - width / 2, visibleFrame.minX),
                 visibleFrame.maxX - width
             )
-            let y = max(visibleFrame.minY, handleFrame.minY - height)
+            let y = visibleFrame.maxY - height
             return CGRect(x: x, y: y, width: width, height: height)
         }
     }
 
-    static func unifiedSurfaceFrame(bodyFrame: CGRect, handleFrame: CGRect) -> CGRect {
-        bodyFrame.union(handleFrame)
-    }
-
-    static func bodySize(
-        fromSurfaceSize surfaceSize: CGSize,
-        handleSize: CGSize,
-        edge: EdgeDock
-    ) -> CGSize {
-        let rawSize: CGSize
-        switch edge {
-        case .left, .right:
-            rawSize = CGSize(
-                width: surfaceSize.width - handleSize.width,
-                height: surfaceSize.height
-            )
-        case .top:
-            rawSize = CGSize(
-                width: surfaceSize.width,
-                height: surfaceSize.height - handleSize.height
-            )
-        }
-        return CGSize(
-            width: min(MemoPanelSize.maximum.width, max(MemoPanelSize.minimum.width, rawSize.width)),
-            height: min(MemoPanelSize.maximum.height, max(MemoPanelSize.minimum.height, rawSize.height))
+    static func panelTitleBarFrame(in panelFrame: CGRect) -> CGRect {
+        let height = min(titleBarHeight, panelFrame.height)
+        return CGRect(
+            x: panelFrame.minX,
+            y: panelFrame.maxY - height,
+            width: panelFrame.width,
+            height: height
         )
     }
 
@@ -286,29 +284,6 @@ enum EdgeLayoutEngine {
                 width: frame.width,
                 height: frame.height
             )
-        }
-    }
-
-    static func panelRevealAnchorRect(
-        panelFrame: CGRect,
-        handleFrame: CGRect,
-        edge: EdgeDock
-    ) -> CGRect {
-        let localHandle = handleFrame.offsetBy(dx: -panelFrame.minX, dy: -panelFrame.minY)
-
-        switch edge {
-        case .right:
-            let height = min(panelFrame.height, max(1, handleFrame.height))
-            let y = min(max(0, localHandle.minY), panelFrame.height - height)
-            return CGRect(x: max(0, panelFrame.width - 2), y: y, width: 2, height: height)
-        case .left:
-            let height = min(panelFrame.height, max(1, handleFrame.height))
-            let y = min(max(0, localHandle.minY), panelFrame.height - height)
-            return CGRect(x: 0, y: y, width: 2, height: height)
-        case .top:
-            let width = min(panelFrame.width, max(1, handleFrame.width))
-            let x = min(max(0, localHandle.minX), panelFrame.width - width)
-            return CGRect(x: x, y: max(0, panelFrame.height - 2), width: width, height: 2)
         }
     }
 
@@ -412,9 +387,9 @@ enum EdgeLayoutEngine {
     private static func usableAxisRange(edge: EdgeDock, visibleFrame: CGRect) -> ClosedRange<CGFloat> {
         switch edge {
         case .left, .right:
-            visibleFrame.minY...visibleFrame.maxY
+            return visibleFrame.minY...visibleFrame.maxY
         case .top:
-            visibleFrame.minX...visibleFrame.maxX
+            return visibleFrame.minX...visibleFrame.maxX
         }
     }
 

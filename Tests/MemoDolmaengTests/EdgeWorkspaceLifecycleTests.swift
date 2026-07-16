@@ -34,6 +34,28 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
     }
 
+    func testProgrammaticOpenAndFoldDoNotPersistAResize() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let note = try store.createNote(title: "크기 보존", content: "본문")
+        let updatedAt = try XCTUnwrap(store.note(withID: note.id)?.updatedAt)
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(store.note(withID: note.id)?.panelSize)
+        XCTAssertEqual(store.note(withID: note.id)?.updatedAt, updatedAt)
+
+        workspace.closeMemo(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertNil(store.note(withID: note.id)?.panelSize)
+        XCTAssertEqual(store.note(withID: note.id)?.updatedAt, updatedAt)
+    }
+
     func testEdgeCreationStartsAnUnsavedIceDraftOnRequestedEdge() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)

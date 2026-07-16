@@ -43,7 +43,7 @@ struct PreferencesView: View {
 
             sliderRow("새 메모 투명도", value: $edgePreferences.defaultOpacity, range: 0.4...1, suffix: "%")
             sliderRow("인덱스 표시 대기", value: $edgePreferences.revealDelay, range: 0...1, suffix: "초")
-            sliderRow("인덱스 숨김 지연", value: $edgePreferences.hideDelay, range: 0.05...2, suffix: "초")
+            sliderRow("인덱스 숨김 지연", value: $edgePreferences.hideDelay, range: 0.05...10, suffix: "초")
             sliderRow("PEEK 접힘 지연", value: $edgePreferences.peekDelay, range: 0.1...2, suffix: "초")
             fontSizeRow
 

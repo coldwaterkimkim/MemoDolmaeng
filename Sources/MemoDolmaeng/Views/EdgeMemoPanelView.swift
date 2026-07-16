@@ -1,101 +1,64 @@
+import AppKit
 import Foundation
 import SwiftUI
 
 struct UnifiedEdgeMemoSurfaceView: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
-    let edge: EdgeDock
-    let handleSize: CGSize
-    let handleOffset: CGFloat
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
     let onRequestIce: () -> Void
     let onRequestFold: () -> Void
     let onPointerChange: (Bool) -> Void
+    let onTitleDragBegan: (NSPoint) -> Void
+    let onTitleDragChanged: (NSPoint) -> Void
+    let onTitleDragEnded: (NSPoint) -> Void
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = surfaceLayout(in: proxy.size)
-
-            ZStack(alignment: .topLeading) {
-                EdgeMemoPanelView(
-                    viewModel: viewModel,
-                    assetRootURL: assetRootURL,
-                    onImageUpload: onImageUpload,
-                    onRequestIce: onRequestIce
-                )
-                .frame(width: layout.body.width, height: layout.body.height)
-                .offset(x: layout.body.minX, y: layout.body.minY)
-
-                MemoAnchorHandleView(
-                    title: viewModel.title,
-                    fillColor: viewModel.color.bodyColor.opacity(viewModel.opacity),
-                    textColor: Color(nsColor: viewModel.textColor),
-                    edge: edge
-                )
-                .frame(width: layout.handle.width, height: layout.handle.height)
-                .offset(x: layout.handle.minX, y: layout.handle.minY)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onRequestFold)
-            }
+            let expansionProgress = min(
+                1,
+                max(0, (proxy.size.height - EdgeLayoutEngine.sideHandleHeight) / 110)
+            )
+            EdgeMemoPanelView(
+                viewModel: viewModel,
+                expansionProgress: expansionProgress,
+                assetRootURL: assetRootURL,
+                onImageUpload: onImageUpload,
+                onRequestIce: onRequestIce,
+                onRequestFold: onRequestFold,
+                onTitleDragBegan: onTitleDragBegan,
+                onTitleDragChanged: onTitleDragChanged,
+                onTitleDragEnded: onTitleDragEnded
+            )
         }
         .onHover(perform: onPointerChange)
-    }
-
-    private func surfaceLayout(in size: CGSize) -> (body: CGRect, handle: CGRect) {
-        switch edge {
-        case .right:
-            let bodyWidth = max(1, size.width - handleSize.width)
-            let y = min(max(0, handleOffset), max(0, size.height - handleSize.height))
-            return (
-                CGRect(x: 0, y: 0, width: bodyWidth, height: size.height),
-                CGRect(x: bodyWidth, y: y, width: handleSize.width, height: handleSize.height)
-            )
-        case .left:
-            let bodyWidth = max(1, size.width - handleSize.width)
-            let y = min(max(0, handleOffset), max(0, size.height - handleSize.height))
-            return (
-                CGRect(x: handleSize.width, y: 0, width: bodyWidth, height: size.height),
-                CGRect(x: 0, y: y, width: handleSize.width, height: handleSize.height)
-            )
-        case .top:
-            let bodyHeight = max(1, size.height - handleSize.height)
-            let x = min(max(0, handleOffset), max(0, size.width - handleSize.width))
-            return (
-                CGRect(x: 0, y: handleSize.height, width: size.width, height: bodyHeight),
-                CGRect(x: x, y: 0, width: handleSize.width, height: handleSize.height)
-            )
-        }
     }
 }
 
 struct EdgeMemoPanelView: View {
     @ObservedObject var viewModel: NoteEditorViewModel
+    @State private var isDraggingTitle = false
 
+    let expansionProgress: CGFloat
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
     let onRequestIce: () -> Void
+    let onRequestFold: () -> Void
+    let onTitleDragBegan: (NSPoint) -> Void
+    let onTitleDragChanged: (NSPoint) -> Void
+    let onTitleDragEnded: (NSPoint) -> Void
 
     var body: some View {
+        let textColor = Color(nsColor: viewModel.textColor)
+        let cornerRadius = EdgeLayoutEngine.handleCornerRadius
+            + (EdgeLayoutEngine.panelCornerRadius - EdgeLayoutEngine.handleCornerRadius) * expansionProgress
+
         VStack(spacing: 0) {
-            TextField(
-                "제목",
-                text: Binding(
-                    get: { viewModel.title },
-                    set: viewModel.updateTitle
-                )
-            )
-            .textFieldStyle(.plain)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color(nsColor: viewModel.textColor))
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .frame(height: 44)
-            .contentShape(Rectangle())
-            .simultaneousGesture(TapGesture().onEnded(onRequestIce))
+            titleBar(textColor: textColor)
 
             Rectangle()
-                .fill(Color(nsColor: viewModel.textColor).opacity(0.16))
+                .fill(textColor.opacity(0.18 * bodyRevealProgress))
                 .frame(height: 1)
 
             MarkdownEditorView(
@@ -110,75 +73,108 @@ struct EdgeMemoPanelView: View {
                 onImageUpload: onImageUpload
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(bodyRevealProgress)
+            .allowsHitTesting(bodyRevealProgress > 0.96)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(viewModel.color.bodyColor.opacity(viewModel.opacity))
         .overlay {
-            RoundedRectangle(
-                cornerRadius: EdgeLayoutEngine.panelCornerRadius,
-                style: .continuous
-            )
-                .stroke(.black.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(
+                    textColor.opacity(0.28 - 0.08 * expansionProgress),
+                    lineWidth: 1.5 - 0.5 * expansionProgress
+                )
                 .allowsHitTesting(false)
         }
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: EdgeLayoutEngine.panelCornerRadius,
-                style: .continuous
-            )
-        )
-    }
-}
-
-private struct MemoAnchorHandleView: View {
-    let title: String
-    let fillColor: Color
-    let textColor: Color
-    let edge: EdgeDock
-
-    var body: some View {
-        let shape = connectedShape
-
-        Text(title)
-            .font(.system(size: 10.5, weight: .semibold))
-            .foregroundStyle(textColor)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 7)
-            .background(shape.fill(fillColor))
-            .overlay(shape.stroke(textColor.opacity(0.28), lineWidth: 1.5))
-            .help(title)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(.isButton)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
-    private var connectedShape: UnevenRoundedRectangle {
-        let radius = EdgeLayoutEngine.handleCornerRadius
-        switch edge {
-        case .right:
-            return UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: radius,
-                topTrailingRadius: radius,
-                style: .continuous
-            )
-        case .left:
-            return UnevenRoundedRectangle(
-                topLeadingRadius: radius,
-                bottomLeadingRadius: radius,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 0,
-                style: .continuous
-            )
-        case .top:
-            return UnevenRoundedRectangle(
-                topLeadingRadius: radius,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: radius,
-                style: .continuous
-            )
+    private func titleBar(textColor: Color) -> some View {
+        ZStack {
+            Text(viewModel.title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(textColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 7)
+                .opacity(compactTitleOpacity)
+                .help(viewModel.title)
+
+            HStack(spacing: 6) {
+                TextField(
+                    "제목",
+                    text: Binding(
+                        get: { viewModel.title },
+                        set: viewModel.updateTitle
+                    )
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(textColor)
+                .lineLimit(1)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded(onRequestIce))
+
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(textColor.opacity(0.48))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+                    .gesture(titleDragGesture)
+                    .help("메모 이동")
+                    .accessibilityLabel("메모 이동")
+
+                Button(action: onRequestFold) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(textColor.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("메모 접기")
+                .accessibilityLabel("메모 접기")
+            }
+            .padding(.horizontal, 10)
+            .opacity(expandedTitleOpacity)
+            .allowsHitTesting(expansionProgress > 0.96)
         }
+        .frame(height: interpolatedTitleBarHeight)
+        .background(textColor.opacity(0.035 * expansionProgress))
+        .contentShape(Rectangle())
+    }
+
+    private var interpolatedTitleBarHeight: CGFloat {
+        EdgeLayoutEngine.sideHandleHeight
+            + (EdgeLayoutEngine.titleBarHeight - EdgeLayoutEngine.sideHandleHeight) * expansionProgress
+    }
+
+    private var compactTitleOpacity: Double {
+        Double(max(0, 1 - expansionProgress * 1.6))
+    }
+
+    private var expandedTitleOpacity: Double {
+        Double(min(1, max(0, (expansionProgress - 0.12) / 0.7)))
+    }
+
+    private var bodyRevealProgress: Double {
+        Double(min(1, max(0, (expansionProgress - 0.16) / 0.84)))
+    }
+
+    private var titleDragGesture: some Gesture {
+        DragGesture(minimumDistance: 3)
+            .onChanged { _ in
+                let point = NSEvent.mouseLocation
+                if !isDraggingTitle {
+                    isDraggingTitle = true
+                    onTitleDragBegan(point)
+                }
+                onTitleDragChanged(point)
+            }
+            .onEnded { _ in
+                guard isDraggingTitle else { return }
+                isDraggingTitle = false
+                onTitleDragEnded(NSEvent.mouseLocation)
+            }
     }
 }

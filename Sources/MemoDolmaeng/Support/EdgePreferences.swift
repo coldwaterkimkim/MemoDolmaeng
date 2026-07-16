@@ -3,6 +3,7 @@ import Combine
 
 final class EdgePreferences: ObservableObject {
     static let shared = EdgePreferences()
+    private static let hideDelayMigrationVersion = 1
 
     @Published var defaultEdge: EdgeDock {
         didSet { defaults.set(defaultEdge.rawValue, forKey: Key.defaultEdge); notifyChanged() }
@@ -66,9 +67,15 @@ final class EdgePreferences: ObservableObject {
         revealDelay = defaults.object(forKey: Key.revealDelay) == nil
             ? 0.18
             : max(0, min(1, defaults.double(forKey: Key.revealDelay)))
-        hideDelay = defaults.object(forKey: Key.hideDelay) == nil
-            ? 0.35
-            : max(0.05, min(2, defaults.double(forKey: Key.hideDelay)))
+        if defaults.integer(forKey: Key.hideDelayMigrationVersion) < Self.hideDelayMigrationVersion {
+            hideDelay = 5
+            defaults.set(hideDelay, forKey: Key.hideDelay)
+            defaults.set(Self.hideDelayMigrationVersion, forKey: Key.hideDelayMigrationVersion)
+        } else {
+            hideDelay = defaults.object(forKey: Key.hideDelay) == nil
+                ? 5
+                : max(0.05, min(10, defaults.double(forKey: Key.hideDelay)))
+        }
     }
 
     private func notifyChanged() {
@@ -84,6 +91,7 @@ final class EdgePreferences: ObservableObject {
         static let peekDelay = "edge.peekDelay"
         static let revealDelay = "edge.revealDelay"
         static let hideDelay = "edge.hideDelay"
+        static let hideDelayMigrationVersion = "edge.hideDelayMigrationVersion"
         static let lastNoteID = "edge.lastNoteID"
     }
 }

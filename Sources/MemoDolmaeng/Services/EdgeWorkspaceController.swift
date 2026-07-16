@@ -208,7 +208,9 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         refreshHandleSelection()
         let controller = panelControllers[closingID]
-        controller?.fold { [weak self, weak controller] in
+        controller?.fold(beforeOrderOut: { [weak self] in
+            self?.prepareIndexHandoff(noteID: closingID)
+        }) { [weak self, weak controller] in
             guard let self else { return }
             self.collapsingNoteIDs.remove(closingID)
             if self.panelControllers[closingID] === controller {
@@ -435,6 +437,9 @@ final class EdgeWorkspaceController: ObservableObject {
         ) { [weak self] content in
             self?.handleContentChange(noteID: noteID, content: content)
         }
+        if panelFrame.contains(NSEvent.mouseLocation) {
+            pointerInsidePanels.insert(noteID)
+        }
         refreshHandleSelection()
         onPresentationChange?(true)
         updatePeekDismissal()
@@ -474,8 +479,31 @@ final class EdgeWorkspaceController: ObservableObject {
         controller.onResize = { [weak self] requestedNoteID, size in
             self?.handlePanelResize(noteID: requestedNoteID, size: size)
         }
+        controller.onDragBegan = { [weak self] in self?.beginDrag(noteID: noteID) }
+        controller.onDragChanged = { [weak self] point in
+            self?.continueDrag(noteID: noteID, point: point)
+        }
+        controller.onDragFinished = { [weak self] point in
+            self?.finishDrag(noteID: noteID, point: point)
+        }
         panelControllers[noteID] = controller
         return controller
+    }
+
+    private func prepareIndexHandoff(noteID: UUID) {
+        collapsingNoteIDs.remove(noteID)
+        let pointerOverIndex = layoutSnapshot.handleFrames[noteID]?.contains(NSEvent.mouseLocation) == true
+        if pointerOverIndex, let edge = edge(for: noteID) {
+            indexVisibility = .visible(edge)
+        } else if pointerInsideHotZones.isEmpty,
+                  pointerInsideHandles.isEmpty,
+                  pointerInsideControls.isEmpty {
+            indexVisibility = .hidden
+        }
+        refreshHandleSelection()
+        if pointerOverIndex {
+            handleControllers[noteID]?.show(animated: false)
+        }
     }
 
     private func focusIce(noteID: UUID) {
@@ -817,17 +845,20 @@ final class EdgeWorkspaceController: ObservableObject {
     private func applyIndexVisibility() {
         for note in activeNotes {
             guard let controller = handleControllers[note.id], let edge = edge(for: note.id) else { continue }
-            let shouldShow: Bool
+            let isAvailableAsIndex = !presentationState.isPresented(note.id)
+                && !collapsingNoteIDs.contains(note.id)
+            let requestedByVisibility: Bool
             switch indexVisibility {
             case .hidden:
-                shouldShow = false
+                requestedByVisibility = false
             case let .visible(visibleEdge):
-                shouldShow = edge == visibleEdge
+                requestedByVisibility = edge == visibleEdge
             case let .transitioning(noteID):
-                shouldShow = note.id == noteID
+                requestedByVisibility = note.id == noteID
             case .dragging:
-                shouldShow = true
+                requestedByVisibility = true
             }
+            let shouldShow = requestedByVisibility && isAvailableAsIndex
             if shouldShow { controller.show() } else { controller.hide() }
         }
         for edge in EdgeDock.allCases {
