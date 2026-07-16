@@ -9,7 +9,6 @@ struct MarkdownEditorView: View {
     let documentID: UUID
     let textColor: NSColor
     let assetRootURL: URL
-    let onInteraction: () -> Void
     let onImageUpload: (Data, String) throws -> URL
 
     @ObservedObject private var preferences = AppPreferences.shared
@@ -55,8 +54,6 @@ struct MarkdownEditorView: View {
             )
         }
         .background(Color.clear)
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded(onInteraction))
         .onReceive(NotificationCenter.default.publisher(for: markdownBus.selectionBoldDidChange)) {
             isBold = $0.userInfo?["isBold"] as? Bool ?? false
         }

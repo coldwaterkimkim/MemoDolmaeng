@@ -162,7 +162,6 @@ private final class NativeEditorFixture {
             documentID: documentID,
             textColor: .labelColor,
             assetRootURL: temporaryDirectory,
-            onInteraction: {},
             onImageUpload: { _, _ in throw CocoaError(.fileWriteUnknown) }
         )
         let hostingView = NSHostingView(rootView: editor)

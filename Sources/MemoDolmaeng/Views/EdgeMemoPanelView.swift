@@ -7,9 +7,6 @@ struct UnifiedEdgeMemoSurfaceView: View {
 
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
-    let isIce: Bool
-    let onRequestIce: () -> Void
-    let onPointerChange: (Bool) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -21,12 +18,9 @@ struct UnifiedEdgeMemoSurfaceView: View {
                 viewModel: viewModel,
                 expansionProgress: expansionProgress,
                 assetRootURL: assetRootURL,
-                onImageUpload: onImageUpload,
-                isIce: isIce,
-                onRequestIce: onRequestIce
+                onImageUpload: onImageUpload
             )
         }
-        .onHover(perform: onPointerChange)
     }
 }
 
@@ -36,8 +30,6 @@ struct EdgeMemoPanelView: View {
     let expansionProgress: CGFloat
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
-    let isIce: Bool
-    let onRequestIce: () -> Void
 
     var body: some View {
         let textColor = Color(nsColor: viewModel.textColor)
@@ -59,7 +51,6 @@ struct EdgeMemoPanelView: View {
                 documentID: viewModel.noteID,
                 textColor: viewModel.textColor,
                 assetRootURL: assetRootURL,
-                onInteraction: onRequestIce,
                 onImageUpload: onImageUpload
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -91,39 +82,21 @@ struct EdgeMemoPanelView: View {
                 .help(viewModel.title)
                 .allowsHitTesting(false)
 
-            if isIce {
-                TextField(
-                    "제목",
-                    text: Binding(
-                        get: { viewModel.title },
-                        set: viewModel.updateTitle
-                    )
+            TextField(
+                "제목",
+                text: Binding(
+                    get: { viewModel.title },
+                    set: viewModel.updateTitle
                 )
-                .textFieldStyle(.plain)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(textColor)
-                .lineLimit(1)
-                .contentShape(Rectangle())
-                .padding(.horizontal, 10)
-                .opacity(expandedTitleOpacity)
-                .allowsHitTesting(expansionProgress > 0.96)
-            } else {
-                Button(action: onRequestIce) {
-                    Text(viewModel.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(textColor)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 10)
-                .opacity(expandedTitleOpacity)
-                .allowsHitTesting(expansionProgress > 0.96)
-                .help("클릭해서 ICE로 고정")
-                .accessibilityLabel("\(viewModel.title), ICE로 고정")
-            }
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(textColor)
+            .lineLimit(1)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 10)
+            .opacity(expandedTitleOpacity)
+            .allowsHitTesting(expansionProgress > 0.96)
         }
         .frame(height: interpolatedTitleBarHeight)
         .background(textColor.opacity(0.035 * expansionProgress))

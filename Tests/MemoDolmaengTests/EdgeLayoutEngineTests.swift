@@ -450,42 +450,31 @@ final class EdgeScreenSelectorTests: XCTestCase {
 }
 
 final class EdgePresentationReducerTests: XCTestCase {
-    func testHoverOpensPeekAndClickPinsIce() {
+    func testClickOpensAndClosesIce() {
         let id = UUID()
-        let opened = EdgePresentationReducer.reduce(state: EdgePresentationState(), action: .hover(id))
-        XCTAssertEqual(opened.peekNoteID, id)
-
-        let pinned = EdgePresentationReducer.reduce(state: opened, action: .click(id))
-        XCTAssertNil(pinned.peekNoteID)
-        XCTAssertEqual(pinned.iceNoteIDs, [id])
-        XCTAssertFalse(EdgePresentationReducer.reduce(state: pinned, action: .click(id)).hasOpenPanels)
+        let opened = EdgePresentationReducer.reduce(state: EdgePresentationState(), action: .click(id))
+        XCTAssertEqual(opened.iceNoteIDs, [id])
+        XCTAssertFalse(EdgePresentationReducer.reduce(state: opened, action: .click(id)).hasOpenPanels)
     }
 
-    func testExistingIceSurvivesHoverAndSecondIce() {
+    func testOpeningSecondIceKeepsExistingIce() {
         let first = UUID()
         let second = UUID()
         let initial = EdgePresentationState(iceNoteIDs: [first])
-        let previewed = EdgePresentationReducer.reduce(state: initial, action: .hover(second))
-        XCTAssertEqual(previewed.peekNoteID, second)
-        XCTAssertEqual(previewed.iceNoteIDs, [first])
-
-        let pinned = EdgePresentationReducer.reduce(state: previewed, action: .click(second))
-        XCTAssertNil(pinned.peekNoteID)
+        let pinned = EdgePresentationReducer.reduce(state: initial, action: .open(second))
         XCTAssertEqual(pinned.iceNoteIDs, [first, second])
         XCTAssertTrue(pinned.isIce(first))
         XCTAssertTrue(pinned.isIce(second))
     }
 
-    func testDoubleClickAndModeToggle() {
+    func testOpeningExistingIceMovesItToMostRecentPosition() {
         let id = UUID()
-        let pinned = EdgePresentationReducer.reduce(
-            state: EdgePresentationState(),
-            action: .doubleClick(id)
+        let other = UUID()
+        let opened = EdgePresentationReducer.reduce(
+            state: EdgePresentationState(iceNoteIDs: [id, other]),
+            action: .open(id)
         )
-        XCTAssertEqual(pinned.iceNoteIDs, [id])
-        let peeked = EdgePresentationReducer.reduce(state: pinned, action: .toggleMode)
-        XCTAssertEqual(peeked.peekNoteID, id)
-        XCTAssertTrue(peeked.iceNoteIDs.isEmpty)
+        XCTAssertEqual(opened.iceNoteIDs, [other, id])
     }
 
     func testFocusAndCloseAffectOnlyRequestedIce() {

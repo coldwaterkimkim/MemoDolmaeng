@@ -28,10 +28,6 @@ final class EdgePreferences: ObservableObject {
         didSet { defaults.set(defaultOpacity, forKey: Key.defaultOpacity); notifyChanged() }
     }
 
-    @Published var peekDelay: Double {
-        didSet { defaults.set(peekDelay, forKey: Key.peekDelay); notifyChanged() }
-    }
-
     @Published var revealDelay: Double {
         didSet { defaults.set(revealDelay, forKey: Key.revealDelay); notifyChanged() }
     }
@@ -61,9 +57,6 @@ final class EdgePreferences: ObservableObject {
         defaultOpacity = defaults.object(forKey: Key.defaultOpacity) == nil
             ? 1
             : max(0.4, min(1, defaults.double(forKey: Key.defaultOpacity)))
-        peekDelay = defaults.object(forKey: Key.peekDelay) == nil
-            ? 0.5
-            : max(0.1, min(2, defaults.double(forKey: Key.peekDelay)))
         revealDelay = defaults.object(forKey: Key.revealDelay) == nil
             ? 0.18
             : max(0, min(1, defaults.double(forKey: Key.revealDelay)))
@@ -88,7 +81,6 @@ final class EdgePreferences: ObservableObject {
         static let targetDisplayID = "edge.targetDisplayID"
         static let defaultAspect = "edge.defaultAspect"
         static let defaultOpacity = "edge.defaultOpacity"
-        static let peekDelay = "edge.peekDelay"
         static let revealDelay = "edge.revealDelay"
         static let hideDelay = "edge.hideDelay"
         static let hideDelayMigrationVersion = "edge.hideDelayMigrationVersion"

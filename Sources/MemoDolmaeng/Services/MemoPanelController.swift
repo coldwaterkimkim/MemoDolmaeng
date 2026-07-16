@@ -10,7 +10,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private var viewModel: NoteEditorViewModel?
     private var currentBodyFrame: CGRect = .zero
     private var currentHandleFrame: CGRect = .zero
-    private var currentIsIce = false
     private var shouldBeVisible = false
     private var visibilityGeneration = 0
     private var isUserResizing = false
@@ -19,8 +18,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
 
     var noteID: UUID? { viewModel?.noteID }
     var onFold: (() -> Void)?
-    var onRequestIce: (() -> Void)?
-    var onPointerChange: ((Bool) -> Void)?
     var onImageUpload: ((UUID, Data, String) throws -> URL)?
     var onCycle: ((Int) -> Void)?
     var onSelectIndex: ((Int) -> Void)?
@@ -79,14 +76,12 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        isIce: Bool,
         focusEditor shouldFocusEditor: Bool = true,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
     ) {
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
-        currentIsIce = isIce
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
         let isSwitchingNotes = wasVisible && previousNoteID != nil && previousNoteID != note.id
@@ -152,12 +147,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                 if shouldFocusEditor { self.focusEditor() }
             }
         }
-    }
-
-    func refresh(note: MemoNote, isIce: Bool) {
-        currentIsIce = isIce
-        viewModel?.sync(note: note)
-        updateRootView()
     }
 
     func reposition(
@@ -314,10 +303,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                     throw CocoaError(.fileWriteUnknown)
                 }
                 return try onImageUpload(noteID, data, originalName)
-            },
-            isIce: currentIsIce,
-            onRequestIce: { [weak self] in self?.onRequestIce?() },
-            onPointerChange: { [weak self] inside in self?.onPointerChange?(inside) }
+            }
         )
 
         if let hostingController {
