@@ -113,7 +113,7 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func createNote(on edge: EdgeDock) {
         if let draftNote {
-            open(noteID: draftNote.id)
+            open(noteID: draftNote.id, focusEditor: true)
             return
         }
         guard activeNotes.count < NoteStore.maxActiveNotes else {
@@ -154,7 +154,7 @@ final class EdgeWorkspaceController: ObservableObject {
         )
         reloadNotes()
         refreshLayout()
-        if let draftNote { open(noteID: draftNote.id) }
+        if let draftNote { open(noteID: draftNote.id, focusEditor: true) }
     }
 
     func handleClick(noteID: UUID) {
@@ -378,7 +378,7 @@ final class EdgeWorkspaceController: ObservableObject {
         }
     }
 
-    private func open(noteID: UUID) {
+    private func open(noteID: UUID, focusEditor: Bool = false) {
         guard let note = note(withID: noteID), note.isActive else { return }
         if presentationState.isIce(noteID) {
             focusIce(noteID: noteID)
@@ -410,7 +410,7 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            focusEditor: true,
+            focusEditor: focusEditor,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: noteID, title: title)
             }

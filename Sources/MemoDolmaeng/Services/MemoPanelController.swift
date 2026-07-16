@@ -123,6 +123,8 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             }
             if shouldFocusEditor {
                 focusEditor(after: isSwitchingNotes ? EdgeLayoutEngine.panelSwitchDuration : 0.12)
+            } else {
+                clearAutomaticFieldFocus()
             }
             return
         }
@@ -132,6 +134,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         window.setFrame(currentHandleFrame, display: false)
         window.hasShadow = false
         window.orderFrontRegardless()
+        if !shouldFocusEditor { clearAutomaticFieldFocus() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = transitionDuration(EdgeLayoutEngine.panelRevealDuration)
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
@@ -144,7 +147,11 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                 else { return }
                 self.configureWindowSizeConstraints()
                 window.hasShadow = true
-                if shouldFocusEditor { self.focusEditor() }
+                if shouldFocusEditor {
+                    self.focusEditor()
+                } else {
+                    self.clearAutomaticFieldFocus()
+                }
             }
         }
     }
@@ -324,6 +331,14 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(textView)
+    }
+
+    private func clearAutomaticFieldFocus() {
+        guard let window,
+              let fieldEditor = window.firstResponder as? NSTextView,
+              fieldEditor.isFieldEditor
+        else { return }
+        window.makeFirstResponder(nil)
     }
 
     private func findTextView(in view: NSView) -> NSTextView? {

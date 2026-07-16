@@ -101,6 +101,28 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         XCTAssertEqual(store.note(withID: note.id)?.updatedAt, updatedAt)
     }
 
+    func testIndexClickDoesNotSelectTheTitleField() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let note = try store.createNote(title: "선택되지 않을 제목", content: "본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(300))
+
+        let panel = try XCTUnwrap(
+            NSApp.windows.last { $0.title == "메모돌맹 메모" && $0.isVisible }
+        )
+        XCTAssertFalse((panel.firstResponder as? NSTextView)?.isFieldEditor == true)
+
+        workspace.closeMemo(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
     func testEdgeCreationStartsAnUnsavedIceDraftOnRequestedEdge() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
