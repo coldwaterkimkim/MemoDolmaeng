@@ -29,6 +29,37 @@ enum EdgeLayoutEngine {
     static let edgeControlSize = CGSize(width: 34, height: 26)
     static let deleteDropSize = CGSize(width: 76, height: 54)
 
+    static func hotZoneFrame(
+        edge: EdgeDock,
+        thickness: CGFloat,
+        screenFrame: CGRect,
+        visibleFrame: CGRect
+    ) -> CGRect {
+        switch edge {
+        case .left:
+            CGRect(
+                x: screenFrame.minX,
+                y: visibleFrame.minY,
+                width: thickness,
+                height: visibleFrame.height
+            )
+        case .right:
+            CGRect(
+                x: screenFrame.maxX - thickness,
+                y: visibleFrame.minY,
+                width: thickness,
+                height: visibleFrame.height
+            )
+        case .top:
+            CGRect(
+                x: screenFrame.minX,
+                y: screenFrame.maxY - thickness,
+                width: screenFrame.width,
+                height: thickness
+            )
+        }
+    }
+
     static func sideHandleWidth(for title: String) -> CGFloat {
         let count = max(1, min(MemoNote.maxTitleLength, title.count))
         return max(64, min(320, CGFloat(count * 11 + 24)))
@@ -283,7 +314,7 @@ enum EdgeLayoutEngine {
         case .right:
             frame.offsetBy(dx: indexSlideDistance, dy: 0)
         case .top:
-            frame.offsetBy(dx: 0, dy: indexSlideDistance)
+            frame.offsetBy(dx: 0, dy: frame.height + 8)
         }
     }
 
@@ -295,7 +326,7 @@ enum EdgeLayoutEngine {
         let candidates: [(EdgeDock, CGFloat)] = [
             (.left, abs(point.x - screenFrame.minX)),
             (.right, abs(point.x - screenFrame.maxX)),
-            (.top, abs(point.y - visibleFrame.maxY))
+            (.top, abs(point.y - screenFrame.maxY))
         ]
         guard let nearest = candidates.min(by: { $0.1 < $1.1 }), nearest.1 <= edgeDropDistance else {
             return nil

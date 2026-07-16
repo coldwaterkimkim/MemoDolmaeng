@@ -19,7 +19,9 @@ final class EdgeHotZoneController {
                 defer: false
             )
             panel.contentView = view
-            panel.level = .floating
+            panel.level = edge == .top
+                ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+                : .floating
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = false
@@ -41,19 +43,16 @@ final class EdgeHotZoneController {
 
     func setDragging(_ dragging: Bool, targetEdge: EdgeDock? = nil) {
         let thickness: CGFloat = dragging ? 20 : 2
-        panels[.left]?.setFrame(
-            CGRect(x: screenFrame.minX, y: visibleFrame.minY, width: thickness, height: visibleFrame.height),
-            display: true
-        )
-        panels[.right]?.setFrame(
-            CGRect(x: screenFrame.maxX - thickness, y: visibleFrame.minY, width: thickness, height: visibleFrame.height),
-            display: true
-        )
-        panels[.top]?.setFrame(
-            CGRect(x: visibleFrame.minX, y: visibleFrame.maxY - thickness, width: visibleFrame.width, height: thickness),
-            display: true
-        )
         for edge in EdgeDock.allCases {
+            panels[edge]?.setFrame(
+                EdgeLayoutEngine.hotZoneFrame(
+                    edge: edge,
+                    thickness: thickness,
+                    screenFrame: screenFrame,
+                    visibleFrame: visibleFrame
+                ),
+                display: true
+            )
             views[edge]?.setDragHighlight(dragging, isTarget: edge == targetEdge)
         }
     }

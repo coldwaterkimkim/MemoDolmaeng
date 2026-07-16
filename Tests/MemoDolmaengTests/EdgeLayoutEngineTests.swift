@@ -285,9 +285,9 @@ final class EdgeLayoutEngineTests: XCTestCase {
             EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: .right).minX,
             frame.minX
         )
-        XCTAssertGreaterThan(
+        XCTAssertGreaterThanOrEqual(
             EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: .top).minY,
-            frame.minY
+            frame.maxY
         )
 
         let panel = CGRect(x: 300, y: 150, width: 340, height: 340)
@@ -311,7 +311,17 @@ final class EdgeLayoutEngineTests: XCTestCase {
         )
     }
 
-    func testDropEdgeAndNormalizedCenterUseVisibleFrame() {
+    func testTopHotZoneAndDropTargetUsePhysicalScreenTop() {
+        let topHotZone = EdgeLayoutEngine.hotZoneFrame(
+            edge: .top,
+            thickness: 2,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        XCTAssertEqual(topHotZone.maxY, screen.maxY, accuracy: 0.001)
+        XCTAssertEqual(topHotZone.minY, screen.maxY - 2, accuracy: 0.001)
+        XCTAssertEqual(topHotZone.width, screen.width, accuracy: 0.001)
+
         XCTAssertEqual(
             EdgeLayoutEngine.dock(
                 at: CGPoint(x: screen.maxX - 2, y: visible.midY),
@@ -322,11 +332,18 @@ final class EdgeLayoutEngineTests: XCTestCase {
         )
         XCTAssertEqual(
             EdgeLayoutEngine.dock(
-                at: CGPoint(x: visible.midX, y: visible.maxY - 1),
+                at: CGPoint(x: screen.midX, y: screen.maxY - 1),
                 screenFrame: screen,
                 visibleFrame: visible
             ),
             .top
+        )
+        XCTAssertNil(
+            EdgeLayoutEngine.dock(
+                at: CGPoint(x: screen.midX, y: visible.maxY - 1),
+                screenFrame: screen,
+                visibleFrame: visible
+            )
         )
         XCTAssertEqual(
             EdgeLayoutEngine.normalizedCenter(
