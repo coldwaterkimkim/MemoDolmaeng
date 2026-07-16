@@ -5,20 +5,34 @@ import Foundation
 final class NoteEditorViewModel: ObservableObject {
     let noteID: UUID
 
+    @Published private(set) var title: String
     @Published private(set) var content: String
     @Published private(set) var color: NoteColor
     @Published private(set) var opacity: Double
     @Published private(set) var textColor: NSColor
 
+    private let onTitleChange: (String) -> Void
     private let onContentChange: (String) -> Void
 
-    init(note: MemoNote, onContentChange: @escaping (String) -> Void) {
+    init(
+        note: MemoNote,
+        onTitleChange: @escaping (String) -> Void,
+        onContentChange: @escaping (String) -> Void
+    ) {
         noteID = note.id
+        title = note.displayTitle
         content = note.content
         color = note.color
         opacity = note.opacity
         textColor = NSColor.memoColor(hex: note.textColorHex) ?? (note.color == .black ? .white : .labelColor)
+        self.onTitleChange = onTitleChange
         self.onContentChange = onContentChange
+    }
+
+    func updateTitle(_ value: String) {
+        guard title != value else { return }
+        title = String(value.prefix(MemoNote.maxTitleLength))
+        onTitleChange(title)
     }
 
     func updateMarkdownContent(_ markdown: String) {
@@ -29,6 +43,7 @@ final class NoteEditorViewModel: ObservableObject {
 
     func sync(note: MemoNote) {
         guard note.id == noteID else { return }
+        if title != note.displayTitle { title = note.displayTitle }
         if content != note.content { content = note.content }
         if color != note.color { color = note.color }
         if opacity != note.opacity { opacity = note.opacity }

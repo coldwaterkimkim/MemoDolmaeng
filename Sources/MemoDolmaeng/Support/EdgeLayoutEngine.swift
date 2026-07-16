@@ -9,22 +9,29 @@ struct EdgeLayoutSnapshot: Equatable {
 }
 
 enum EdgeLayoutEngine {
-    static let handleWidth: CGFloat = 26
+    static let sideHandleHeight: CGFloat = 26
     static let topHandleHeight: CGFloat = 26
     static let groupGap: CGFloat = 6
     static let mergeDistance: CGFloat = 12
     static let edgeDropDistance: CGFloat = 28
     static let panelWidth: CGFloat = 340
-    static let animationDuration: TimeInterval = 0.16
-    static let indexAnimationDuration: TimeInterval = 0.12
+    static let panelRevealDuration: TimeInterval = 0.22
+    static let panelHideDuration: TimeInterval = 0.18
+    static let panelSwitchDuration: TimeInterval = 0.14
+    static let contentSwitchDuration: TimeInterval = 0.10
+    static let indexRevealDuration: TimeInterval = 0.16
+    static let indexHideDuration: TimeInterval = 0.12
+    static let indexSlideDistance: CGFloat = 14
+    static let panelCornerRadius: CGFloat = 10
+    static let handleCornerRadius: CGFloat = 9
 
-    static func sideHandleLength(for title: String) -> CGFloat {
-        let count = max(1, min(6, title.count))
-        return max(48, CGFloat(count * 11 + 10))
+    static func sideHandleWidth(for title: String) -> CGFloat {
+        let count = max(1, min(MemoNote.maxTitleLength, title.count))
+        return max(64, min(320, CGFloat(count * 11 + 24)))
     }
 
     static func topHandleWidth(for title: String) -> CGFloat {
-        max(48, min(84, CGFloat(max(1, min(6, title.count)) * 11 + 18)))
+        max(64, min(240, CGFloat(max(1, min(MemoNote.maxTitleLength, title.count)) * 11 + 20)))
     }
 
     static func layout(
@@ -120,10 +127,11 @@ enum EdgeLayoutEngine {
                     var y = origin + totalLength
                     for (note, height) in zip(groupNotes, lengths) {
                         y -= height
+                        let width = sideHandleWidth(for: note.displayTitle)
                         let x = edge == .right
-                            ? screenFrame.maxX - handleWidth
+                            ? screenFrame.maxX - width
                             : screenFrame.minX
-                        handleFrames[note.id] = CGRect(x: x, y: y, width: handleWidth, height: height)
+                        handleFrames[note.id] = CGRect(x: x, y: y, width: width, height: height)
                     }
                 }
 
@@ -142,25 +150,33 @@ enum EdgeLayoutEngine {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        aspectRatio: CGFloat
+        aspectRatio: CGFloat,
+        panelSize: MemoPanelSize? = nil
     ) -> CGRect {
-        let desiredHeight = panelWidth / max(0.1, aspectRatio)
-        let height = min(desiredHeight, visibleFrame.height)
+        let maximumWidth = max(1, min(MemoPanelSize.maximum.width, visibleFrame.width))
+        let minimumWidth = min(MemoPanelSize.minimum.width, maximumWidth)
+        let requestedWidth = panelSize?.cgSize.width ?? panelWidth
+        let width = min(maximumWidth, max(minimumWidth, requestedWidth))
+
+        let maximumHeight = max(1, min(MemoPanelSize.maximum.height, visibleFrame.height))
+        let minimumHeight = min(MemoPanelSize.minimum.height, maximumHeight)
+        let requestedHeight = panelSize?.cgSize.height ?? width / max(0.1, aspectRatio)
+        let height = min(maximumHeight, max(minimumHeight, requestedHeight))
 
         switch edge {
         case .right:
             let y = min(max(handleFrame.maxY - height, visibleFrame.minY), visibleFrame.maxY - height)
-            return CGRect(x: handleFrame.minX - panelWidth, y: y, width: panelWidth, height: height)
+            return CGRect(x: handleFrame.minX - width, y: y, width: width, height: height)
         case .left:
             let y = min(max(handleFrame.maxY - height, visibleFrame.minY), visibleFrame.maxY - height)
-            return CGRect(x: handleFrame.maxX, y: y, width: panelWidth, height: height)
+            return CGRect(x: handleFrame.maxX, y: y, width: width, height: height)
         case .top:
             let x = min(
-                max(handleFrame.midX - panelWidth / 2, visibleFrame.minX),
-                visibleFrame.maxX - panelWidth
+                max(handleFrame.midX - width / 2, visibleFrame.minX),
+                visibleFrame.maxX - width
             )
             let y = max(visibleFrame.minY, handleFrame.minY - height)
-            return CGRect(x: x, y: y, width: panelWidth, height: height)
+            return CGRect(x: x, y: y, width: width, height: height)
         }
     }
 
@@ -173,14 +189,14 @@ enum EdgeLayoutEngine {
         switch edge {
         case .right:
             return CGRect(
-                x: screenFrame.maxX - handleWidth,
+                x: screenFrame.maxX + 8,
                 y: frame.minY,
                 width: frame.width,
                 height: frame.height
             )
         case .left:
             return CGRect(
-                x: screenFrame.minX + handleWidth - frame.width,
+                x: screenFrame.minX - frame.width - 8,
                 y: frame.minY,
                 width: frame.width,
                 height: frame.height
@@ -188,10 +204,44 @@ enum EdgeLayoutEngine {
         case .top:
             return CGRect(
                 x: frame.minX,
-                y: visibleFrame.maxY,
+                y: visibleFrame.maxY + 8,
                 width: frame.width,
                 height: frame.height
             )
+        }
+    }
+
+    static func panelRevealAnchorRect(
+        panelFrame: CGRect,
+        handleFrame: CGRect,
+        edge: EdgeDock
+    ) -> CGRect {
+        let localHandle = handleFrame.offsetBy(dx: -panelFrame.minX, dy: -panelFrame.minY)
+
+        switch edge {
+        case .right:
+            let height = min(panelFrame.height, max(1, handleFrame.height))
+            let y = min(max(0, localHandle.minY), panelFrame.height - height)
+            return CGRect(x: max(0, panelFrame.width - 2), y: y, width: 2, height: height)
+        case .left:
+            let height = min(panelFrame.height, max(1, handleFrame.height))
+            let y = min(max(0, localHandle.minY), panelFrame.height - height)
+            return CGRect(x: 0, y: y, width: 2, height: height)
+        case .top:
+            let width = min(panelFrame.width, max(1, handleFrame.width))
+            let x = min(max(0, localHandle.minX), panelFrame.width - width)
+            return CGRect(x: x, y: max(0, panelFrame.height - 2), width: width, height: 2)
+        }
+    }
+
+    static func hiddenHandleFrame(for frame: CGRect, edge: EdgeDock) -> CGRect {
+        switch edge {
+        case .left:
+            frame.offsetBy(dx: -indexSlideDistance, dy: 0)
+        case .right:
+            frame.offsetBy(dx: indexSlideDistance, dy: 0)
+        case .top:
+            frame.offsetBy(dx: 0, dy: indexSlideDistance)
         }
     }
 
@@ -270,7 +320,7 @@ enum EdgeLayoutEngine {
         groupCount: Int
     ) -> [UUID: CGFloat] {
         let natural = Dictionary(uniqueKeysWithValues: notes.map { note in
-            let length = edge == .top ? topHandleWidth(for: note.title) : sideHandleLength(for: note.title)
+            let length = edge == .top ? topHandleWidth(for: note.displayTitle) : sideHandleHeight
             return (note.id, length)
         })
         let total = natural.values.reduce(0, +)

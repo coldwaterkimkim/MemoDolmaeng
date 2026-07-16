@@ -19,6 +19,7 @@ enum EdgeDock: String, Codable, CaseIterable, Identifiable {
 enum EdgeIndexVisibilityState: Equatable {
     case hidden
     case visible(EdgeDock)
+    case transitioning(UUID)
     case dragging(UUID)
 }
 
@@ -43,6 +44,7 @@ enum EdgePresentationState: Equatable {
 }
 
 enum EdgePresentationAction: Equatable {
+    case hover(UUID)
     case click(UUID)
     case doubleClick(UUID)
     case toggleMode
@@ -54,9 +56,11 @@ enum EdgePresentationReducer {
         action: EdgePresentationAction
     ) -> EdgePresentationState {
         switch action {
+        case let .hover(noteID):
+            return state.isIce ? state : .peek(noteID)
         case let .click(noteID):
-            if state.noteID == noteID { return .closed }
-            return state.isIce ? .ice(noteID) : .peek(noteID)
+            if state == .ice(noteID) { return .closed }
+            return .ice(noteID)
         case let .doubleClick(noteID):
             return .ice(noteID)
         case .toggleMode:

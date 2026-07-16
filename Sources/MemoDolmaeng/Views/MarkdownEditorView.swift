@@ -7,6 +7,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     let markdown: String
     let theme: MarkdownEditorTheme
     let assetRootURL: URL
+    let onInteraction: () -> Void
     let onMarkdownChange: (String) -> Void
     let onImageUpload: (Data, String) throws -> URL
 
@@ -20,6 +21,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            onInteraction: onInteraction,
             onMarkdownChange: onMarkdownChange,
             onImageUpload: onImageUpload
         )
@@ -43,9 +45,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         let coordinator = context.coordinator
-        webView.onRequestEditorFocus = { [weak coordinator] point in
-            coordinator?.focusEditor(at: point)
-        }
+        webView.onInteraction = { [weak coordinator] in coordinator?.onInteraction() }
         webView.onRequestEditorCommand = { [weak coordinator] command in
             coordinator?.performCommand(command)
             return true
@@ -60,6 +60,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onInteraction = onInteraction
         context.coordinator.onMarkdownChange = onMarkdownChange
         context.coordinator.onImageUpload = onImageUpload
         context.coordinator.sync(markdown: markdown, theme: theme)
@@ -81,6 +82,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             "editorImageUpload"
         ]
 
+        var onInteraction: () -> Void
         var onMarkdownChange: (String) -> Void
         var onImageUpload: (Data, String) throws -> URL
 
@@ -91,9 +93,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var editorMarkdown = ""
 
         init(
+            onInteraction: @escaping () -> Void,
             onMarkdownChange: @escaping (String) -> Void,
             onImageUpload: @escaping (Data, String) throws -> URL
         ) {
+            self.onInteraction = onInteraction
             self.onMarkdownChange = onMarkdownChange
             self.onImageUpload = onImageUpload
             super.init()
@@ -145,7 +149,6 @@ struct MarkdownEditorView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isReady = true
             sync(markdown: pendingMarkdown, theme: pendingTheme)
-            focusEditor()
         }
 
         func webView(
@@ -295,12 +298,11 @@ struct MarkdownEditorTheme: Equatable {
 
     static func current(
         preferences: AppPreferences = .shared,
-        textColor: NSColor? = nil
+        textColor: NSColor? = nil,
+        showsTopBar: Bool = true
     ) -> MarkdownEditorTheme {
         MarkdownEditorTheme(values: [
             "memo-text-color": cssColor(textColor ?? preferences.textColor),
-            "memo-text-stroke-color": cssColor(preferences.strokeColor),
-            "memo-text-stroke-width": cssLength(max(0, preferences.strokeWidth)),
             "memo-body-font-size": cssLength(preferences.bodyFontSize),
             "memo-heading1-font-size": cssLength(preferences.heading1FontSize),
             "memo-heading2-font-size": cssLength(preferences.heading2FontSize),
@@ -310,7 +312,8 @@ struct MarkdownEditorTheme: Equatable {
             "memo-padding-top": cssLength(preferences.verticalInset + contentTopClearance),
             "memo-padding-bottom": cssLength(preferences.verticalInset),
             "memo-list-indent": cssLength(preferences.listIndent),
-            "memo-quote-indent": cssLength(preferences.quoteIndent)
+            "memo-quote-indent": cssLength(preferences.quoteIndent),
+            "memo-top-bar-display": showsTopBar ? "flex" : "none"
         ])
     }
 
@@ -330,11 +333,16 @@ struct MarkdownEditorTheme: Equatable {
 
 final class MemoMarkdownWebView: WKWebView {
     var editorIsFocused = false
-    var onRequestEditorFocus: ((NSPoint) -> Void)?
+    var onInteraction: (() -> Void)?
     var onRequestEditorCommand: ((String) -> Bool)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onInteraction?()
+        super.mouseDown(with: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

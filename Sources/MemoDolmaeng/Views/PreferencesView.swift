@@ -60,13 +60,13 @@ struct PreferencesView: View {
         Form {
             Picker("활성 메모", selection: selectedNoteBinding) {
                 ForEach(workspace.activeNotes) { note in
-                    Text(note.title).tag(note.id as UUID?)
+                    Text(note.displayTitle).tag(note.id as UUID?)
                 }
             }
 
             if let note = selectedNote {
                 TextField("인덱스 제목", text: Binding(
-                    get: { note.title },
+                    get: { note.displayTitle },
                     set: { workspace.updateTitle(noteID: note.id, title: $0) }
                 ))
 
@@ -82,7 +82,7 @@ struct PreferencesView: View {
                     }
                 }
 
-                Picker("메모 비율", selection: Binding(
+                Picker("크기 프리셋", selection: Binding(
                     get: { note.aspectRatio },
                     set: { workspace.updateAppearance(noteID: note.id, aspectRatio: $0) }
                 )) {
@@ -90,6 +90,25 @@ struct PreferencesView: View {
                     Text("3:4").tag(MemoAspectRatio.portrait)
                 }
                 .pickerStyle(.segmented)
+
+                if let panelSize = note.panelSize {
+                    LabeledContent("수동 크기") {
+                        HStack(spacing: 8) {
+                            Text("\(Int(panelSize.width.rounded())) × \(Int(panelSize.height.rounded()))")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            Button {
+                                workspace.updateAppearance(
+                                    noteID: note.id,
+                                    aspectRatio: note.aspectRatio
+                                )
+                            } label: {
+                                Image(systemName: "arrow.counterclockwise")
+                            }
+                            .help("프리셋 크기로 복원")
+                        }
+                    }
+                }
 
                 LabeledContent("배경색") {
                     HStack(spacing: 8) {

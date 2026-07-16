@@ -91,7 +91,7 @@ final class NoteStore {
         id: UUID = UUID(),
         title: String? = nil,
         content: String,
-        color: NoteColor = .black,
+        color: NoteColor? = nil,
         textColorHex: String? = nil,
         placement: MemoPlacement? = nil,
         aspectRatio: MemoAspectRatio = .portrait,
@@ -115,8 +115,9 @@ final class NoteStore {
         let note = MemoNote(
             id: id,
             title: title ?? MemoNote.deriveTitle(from: content, fallbackIndex: nextFallbackTitleIndex()),
+            isTitleExplicit: title != nil,
             content: content,
-            color: color,
+            color: color ?? NoteColor.randomMemoColor(excluding: notes.last?.color),
             textColorHex: textColorHex,
             isActive: true,
             placement: resolvedPlacement,
@@ -164,11 +165,15 @@ final class NoteStore {
     func updateTitle(noteID: UUID, title: String) {
         mutate(noteID: noteID) { note in
             var updated = note
-            updated.title = title.isEmpty
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            updated.title = trimmed.isEmpty
                 ? MemoNote.deriveTitle(from: note.content, fallbackIndex: 1)
-                : title
-            guard note.title != updated.title else { return false }
-            note.title = updated.title
+                : trimmed
+            updated.isTitleExplicit = !trimmed.isEmpty
+            guard note.title != updated.title || note.isTitleExplicit != updated.isTitleExplicit else {
+                return false
+            }
+            note = updated
             note.updatedAt = now()
             return true
         }
@@ -185,8 +190,22 @@ final class NoteStore {
             var updated = note
             if let color { updated.color = color }
             if let textColorHex { updated.textColorHex = textColorHex }
-            if let aspectRatio { updated.aspectRatio = aspectRatio }
+            if let aspectRatio {
+                updated.aspectRatio = aspectRatio
+                updated.panelSize = nil
+            }
             if let opacity { updated.opacity = opacity }
+            guard updated != note else { return false }
+            updated.updatedAt = now()
+            note = updated
+            return true
+        }
+    }
+
+    func updatePanelSize(noteID: UUID, size: CGSize) {
+        mutate(noteID: noteID) { note in
+            var updated = note
+            updated.panelSize = MemoPanelSize(size)
             guard updated != note else { return false }
             updated.updatedAt = now()
             note = updated

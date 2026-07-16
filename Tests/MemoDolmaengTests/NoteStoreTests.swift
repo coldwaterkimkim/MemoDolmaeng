@@ -124,6 +124,8 @@ final class NoteStoreTests: XCTestCase {
             }
         )
         let first = try store.createNote(content: "첫 메모")
+        XCTAssertTrue(NoteColor.memoPalette.contains(first.color))
+        XCTAssertNotEqual(first.color, .black)
         for index in 1..<NoteStore.maxActiveNotes { try store.createNote(content: "메모 \(index)") }
 
         XCTAssertThrowsError(try store.createNote(content: "거절될 메모")) { error in
@@ -166,6 +168,7 @@ final class NoteStoreTests: XCTestCase {
             aspectRatio: .portrait,
             opacity: 0.6
         )
+        store.updatePanelSize(noteID: note.id, size: CGSize(width: 512, height: 388))
 
         let reloaded = try NoteStore(persistenceURL: fixture.notesURL)
         let saved = try XCTUnwrap(reloaded.note(withID: note.id))
@@ -174,15 +177,35 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertEqual(saved.opacity, 0.6, accuracy: 0.0001)
         XCTAssertEqual(saved.color, .purple)
         XCTAssertEqual(saved.textColorHex, "#123456")
+        XCTAssertEqual(saved.panelSize?.cgSize.width ?? 0, 512, accuracy: 0.001)
+        XCTAssertEqual(saved.panelSize?.cgSize.height ?? 0, 388, accuracy: 0.001)
+        XCTAssertTrue(saved.isTitleExplicit)
 
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: fixture.notesURL)) as? [String: Any]
         )
         let encodedNote = try XCTUnwrap((json["notes"] as? [[String: Any]])?.first)
         XCTAssertNotNil(encodedNote["placement"])
+        XCTAssertNotNil(encodedNote["panelSize"])
+        XCTAssertEqual(encodedNote["isTitleExplicit"] as? Bool, true)
         XCTAssertNil(encodedNote["handlePosition"])
         XCTAssertNotNil(json["edgeGroups"])
         XCTAssertNotNil(json["defaultGroupID"])
+    }
+
+    func testChoosingAspectRatioResetsManualPanelSize() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let note = try store.createNote(content: "크기 재설정")
+        store.updatePanelSize(noteID: note.id, size: CGSize(width: 520, height: 390))
+        XCTAssertNotNil(store.note(withID: note.id)?.panelSize)
+
+        store.updateAppearance(noteID: note.id, aspectRatio: .square)
+
+        XCTAssertNil(store.note(withID: note.id)?.panelSize)
+        XCTAssertEqual(store.note(withID: note.id)?.aspectRatio, .square)
     }
 
     func testAttachToDefaultRemovesUnusedManualGroup() throws {
@@ -202,12 +225,36 @@ final class NoteStoreTests: XCTestCase {
     func testTitleDerivationAndMeaningfulContentDetection() {
         XCTAssertEqual(
             MemoNote.deriveTitle(from: "\n  \n### **오늘 할 일 정리**", fallbackIndex: 3),
-            "오늘 할 일"
+            "오늘 할 일 정리"
         )
+        let legacyTitle = MemoNote(
+            title: "메모돌멩 수",
+            content: "# [메모돌멩 수정사항]\n본문",
+            placement: MemoPlacement(groupID: UUID(), order: 0)
+        )
+        XCTAssertEqual(legacyTitle.displayTitle, "메모돌멩 수정사항")
+
+        let explicitTitle = MemoNote(
+            title: "메모돌멩 수",
+            isTitleExplicit: true,
+            content: "# [메모돌멩 수정사항]\n본문",
+            placement: MemoPlacement(groupID: UUID(), order: 0)
+        )
+        XCTAssertEqual(explicitTitle.displayTitle, "메모돌멩 수")
         XCTAssertEqual(MemoNote.deriveTitle(from: "```\n---", fallbackIndex: 3), "메모3")
         XCTAssertFalse(MemoNote.hasMeaningfulContent(" \n\t\u{200B}"))
         XCTAssertTrue(MemoNote.hasMeaningfulContent("- [ ]"))
         XCTAssertTrue(MemoNote.hasMeaningfulContent("![이미지](memodolmaeng-asset://id/image.png)"))
+    }
+
+    func testRandomMemoColorUsesVisiblePaletteAndExcludesRequestedColor() {
+        for _ in 0..<50 {
+            let color = NoteColor.randomMemoColor(excluding: .yellow)
+            XCTAssertTrue(NoteColor.memoPalette.contains(color))
+            XCTAssertNotEqual(color, .yellow)
+            XCTAssertNotEqual(color, .black)
+            XCTAssertNotEqual(color, .white)
+        }
     }
 
     func testInitializerThrowsForUnreadablePersistenceData() throws {

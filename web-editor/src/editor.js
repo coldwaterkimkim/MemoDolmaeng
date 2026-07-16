@@ -286,6 +286,9 @@ async function createEditor() {
   const instance = new Crepe({
     root: editorRoot,
     defaultValue: storageToEditorMarkdown(pendingMarkdown),
+    features: {
+      [Crepe.Feature.TopBar]: true
+    },
     featureConfigs: {
       [Crepe.Feature.ImageBlock]: {
         onUpload: uploadImage,

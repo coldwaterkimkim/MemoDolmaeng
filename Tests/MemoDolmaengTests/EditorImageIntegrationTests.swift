@@ -37,6 +37,61 @@ final class EditorImageIntegrationTests: XCTestCase {
         XCTAssertTrue(crepeUI ?? false)
         XCTAssertEqual(markdown, "")
 
+        _ = try await evaluate(
+            webView,
+            "window.setMemoEditorTheme({'memo-top-bar-display': 'flex'}); true"
+        )
+        try await waitUntil(webView: webView) {
+            "getComputedStyle(document.querySelector('.milkdown-top-bar')).display === 'flex'"
+        }
+        let topBarMetrics = try await evaluate(
+            webView,
+            "(() => { const bar = document.querySelector('.milkdown-top-bar'); const inner = bar?.querySelector('.top-bar-inner'); return { display: getComputedStyle(bar).display, height: bar?.getBoundingClientRect().height || 0, innerHeight: inner?.getBoundingClientRect().height || 0, pageWidth: document.documentElement.scrollWidth, viewportWidth: document.documentElement.clientWidth }; })()"
+        ) as? [String: Any]
+        XCTAssertEqual(topBarMetrics?["display"] as? String, "flex")
+        XCTAssertLessThanOrEqual((topBarMetrics?["height"] as? NSNumber)?.doubleValue ?? .infinity, 39)
+        XCTAssertLessThanOrEqual((topBarMetrics?["innerHeight"] as? NSNumber)?.doubleValue ?? .infinity, 38)
+        XCTAssertLessThanOrEqual(
+            (topBarMetrics?["pageWidth"] as? NSNumber)?.doubleValue ?? .infinity,
+            (topBarMetrics?["viewportWidth"] as? NSNumber)?.doubleValue ?? 0
+        )
+
+        let longMarkdown = (0..<80).map { "본문 줄 \($0)" }.joined(separator: "\n\n")
+        let longLiteral = String(data: try JSONEncoder().encode(longMarkdown), encoding: .utf8)!
+        _ = try await evaluate(webView, "window.setMemoMarkdown(\(longLiteral)); true")
+        try await waitUntil(webView: webView) {
+            "document.querySelector('.ProseMirror').scrollHeight > document.querySelector('.ProseMirror').clientHeight"
+        }
+        let scrollMetrics = try await evaluate(
+            webView,
+            "(() => { const root = document.querySelector('.milkdown'); const bar = document.querySelector('.milkdown-top-bar'); const body = document.querySelector('.ProseMirror'); body.scrollTop = body.scrollHeight; const rootRect = root.getBoundingClientRect(); const barRect = bar.getBoundingClientRect(); const bodyRect = body.getBoundingClientRect(); return { rootOverflow: getComputedStyle(root).overflow, bodyOverflowY: getComputedStyle(body).overflowY, barBottom: barRect.bottom, bodyTop: bodyRect.top, bodyBottom: bodyRect.bottom, rootBottom: rootRect.bottom, scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight }; })()"
+        ) as? [String: Any]
+        XCTAssertEqual(scrollMetrics?["rootOverflow"] as? String, "hidden")
+        XCTAssertEqual(scrollMetrics?["bodyOverflowY"] as? String, "auto")
+        XCTAssertGreaterThan((scrollMetrics?["scrollTop"] as? NSNumber)?.doubleValue ?? 0, 0)
+        XCTAssertGreaterThan(
+            (scrollMetrics?["scrollHeight"] as? NSNumber)?.doubleValue ?? 0,
+            (scrollMetrics?["clientHeight"] as? NSNumber)?.doubleValue ?? .infinity
+        )
+        XCTAssertGreaterThanOrEqual(
+            (scrollMetrics?["bodyTop"] as? NSNumber)?.doubleValue ?? 0,
+            ((scrollMetrics?["barBottom"] as? NSNumber)?.doubleValue ?? .infinity) - 0.5
+        )
+        XCTAssertLessThanOrEqual(
+            (scrollMetrics?["bodyBottom"] as? NSNumber)?.doubleValue ?? .infinity,
+            ((scrollMetrics?["rootBottom"] as? NSNumber)?.doubleValue ?? 0) + 0.5
+        )
+
+        _ = try await evaluate(
+            webView,
+            "window.setMemoEditorTheme({'memo-top-bar-display': 'none'}); true"
+        )
+        let hiddenTopBar = try await evaluate(
+            webView,
+            "getComputedStyle(document.querySelector('.milkdown-top-bar')).display === 'none'"
+        ) as? Bool
+        XCTAssertTrue(hiddenTopBar ?? false)
+
         _ = try await evaluate(webView, "window.setMemoMarkdown('#\\n'); true")
         try await waitUntil(webView: webView) {
             "Boolean(document.querySelector('.ProseMirror h1'))"
@@ -46,6 +101,32 @@ final class EditorImageIntegrationTests: XCTestCase {
             "(() => { const h1 = document.querySelector('.ProseMirror h1'); const br = h1?.querySelector('br.ProseMirror-trailingBreak'); return Boolean(h1 && h1.getBoundingClientRect().height > 0 && (!br || getComputedStyle(br).display !== 'none')); })()"
         ) as? Bool
         XCTAssertTrue(headingIsVisible ?? false)
+
+        _ = try await evaluate(webView, "window.setMemoMarkdown('# 제목\\n\\n본문'); true")
+        try await waitUntil(webView: webView) {
+            "Boolean(document.querySelector('.ProseMirror h1') && document.querySelector('.ProseMirror p'))"
+        }
+        let textStrokeIsAbsent = try await evaluate(
+            webView,
+            "[...document.querySelectorAll('.ProseMirror h1, .ProseMirror p')].every((node) => getComputedStyle(node).webkitTextStrokeWidth === '0px')"
+        ) as? Bool
+        XCTAssertTrue(textStrokeIsAbsent ?? false)
+
+        let firstHeadingMargin = try await evaluate(
+            webView,
+            "parseFloat(getComputedStyle(document.querySelector('.ProseMirror h1')).marginTop)"
+        ) as? NSNumber
+        XCTAssertLessThanOrEqual(firstHeadingMargin?.doubleValue ?? .infinity, 10)
+
+        _ = try await evaluate(webView, "window.setMemoMarkdown('윗줄\\n\\n# 제목\\n\\n본문'); true")
+        try await waitUntil(webView: webView) {
+            "Boolean(document.querySelector('.ProseMirror p + h1'))"
+        }
+        let followingHeadingMargin = try await evaluate(
+            webView,
+            "parseFloat(getComputedStyle(document.querySelector('.ProseMirror p + h1')).marginTop)"
+        ) as? NSNumber
+        XCTAssertLessThanOrEqual(followingHeadingMargin?.doubleValue ?? .infinity, 10)
     }
 
     @MainActor

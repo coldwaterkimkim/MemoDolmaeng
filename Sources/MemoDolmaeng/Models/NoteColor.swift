@@ -10,6 +10,13 @@ enum NoteColor: String, Codable, CaseIterable, Equatable {
     case gray
     case white
 
+    static let memoPalette: [NoteColor] = [.yellow, .blue, .green, .pink, .purple, .gray]
+
+    static func randomMemoColor(excluding excluded: NoteColor? = nil) -> NoteColor {
+        let candidates = memoPalette.filter { $0 != excluded }
+        return candidates.randomElement() ?? .yellow
+    }
+
     var title: String {
         switch self {
         case .black: "Black"

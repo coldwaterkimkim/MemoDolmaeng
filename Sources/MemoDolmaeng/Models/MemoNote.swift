@@ -17,6 +17,53 @@ enum MemoAspectRatio: String, Codable, CaseIterable, Equatable {
     }
 }
 
+struct MemoPanelSize: Codable, Equatable {
+    static let minimum = CGSize(width: 280, height: 240)
+    static let maximum = CGSize(width: 720, height: 900)
+
+    var width: Double
+    var height: Double
+
+    init(width: CGFloat, height: CGFloat) {
+        self.width = Double(width)
+        self.height = Double(height)
+        normalize()
+    }
+
+    init(_ size: CGSize) {
+        self.init(width: size.width, height: size.height)
+    }
+
+    var cgSize: CGSize {
+        CGSize(width: width, height: height)
+    }
+
+    mutating func normalize() {
+        width = Self.clamped(
+            width,
+            minimum: Double(Self.minimum.width),
+            maximum: Double(Self.maximum.width),
+            fallback: Double(EdgeLayoutEngine.panelWidth)
+        )
+        height = Self.clamped(
+            height,
+            minimum: Double(Self.minimum.height),
+            maximum: Double(Self.maximum.height),
+            fallback: Double(EdgeLayoutEngine.panelWidth / MemoAspectRatio.portrait.value)
+        )
+    }
+
+    private static func clamped(
+        _ value: Double,
+        minimum: Double,
+        maximum: Double,
+        fallback: Double
+    ) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(maximum, max(minimum, value))
+    }
+}
+
 struct MemoAttachment: Codable, Equatable, Identifiable {
     let id: UUID
     var fileName: String
@@ -76,6 +123,7 @@ struct MemoEdgeGroup: Codable, Equatable, Identifiable {
 
 struct MemoNote: Codable, Equatable, Identifiable {
     static let translucentOpacity = 0.72
+    static let maxTitleLength = 40
 
     let id: UUID
     var title: String {
@@ -84,12 +132,14 @@ struct MemoNote: Codable, Equatable, Identifiable {
             if title != normalized { title = normalized }
         }
     }
+    var isTitleExplicit: Bool
     var content: String
     var color: NoteColor
     var textColorHex: String
     var isActive: Bool
     var placement: MemoPlacement
     var aspectRatio: MemoAspectRatio
+    var panelSize: MemoPanelSize?
     var opacity: Double {
         didSet {
             let normalized = Self.normalizedUnitValue(opacity, fallback: 1)
@@ -103,12 +153,14 @@ struct MemoNote: Codable, Equatable, Identifiable {
     init(
         id: UUID = UUID(),
         title: String? = nil,
+        isTitleExplicit: Bool = false,
         content: String = "",
         color: NoteColor = .black,
         textColorHex: String? = nil,
         isActive: Bool = true,
         placement: MemoPlacement,
         aspectRatio: MemoAspectRatio = .portrait,
+        panelSize: MemoPanelSize? = nil,
         opacity: Double = 1,
         attachments: [MemoAttachment] = [],
         createdAt: Date = Date(),
@@ -119,12 +171,15 @@ struct MemoNote: Codable, Equatable, Identifiable {
             title ?? Self.deriveTitle(from: content, fallbackIndex: 1),
             fallback: "메모"
         )
+        self.isTitleExplicit = isTitleExplicit
         self.content = content
         self.color = color
         self.textColorHex = textColorHex ?? Self.defaultTextColorHex(for: color)
         self.isActive = isActive
         self.placement = MemoPlacement(groupID: placement.groupID, order: placement.order)
         self.aspectRatio = aspectRatio
+        self.panelSize = panelSize
+        self.panelSize?.normalize()
         self.opacity = Self.normalizedUnitValue(opacity, fallback: 1)
         self.attachments = attachments
         self.createdAt = createdAt
@@ -135,11 +190,20 @@ struct MemoNote: Codable, Equatable, Identifiable {
         for line in content.components(separatedBy: .newlines) {
             let candidate = markdownTitleCandidate(from: line)
             if !candidate.isEmpty {
-                return String(candidate.prefix(6))
+                return normalizedTitle(candidate, fallback: "메모\(max(1, fallbackIndex))")
             }
         }
 
-        return String("메모\(max(1, fallbackIndex))".prefix(6))
+        return normalizedTitle("메모\(max(1, fallbackIndex))", fallback: "메모")
+    }
+
+    var displayTitle: String {
+        guard !isTitleExplicit, title.count <= 6 else { return title }
+        let derived = Self.deriveTitle(from: content, fallbackIndex: 1)
+        guard derived.count > title.count,
+              derived.lowercased().hasPrefix(title.lowercased())
+        else { return title }
+        return derived
     }
 
     static func defaultTextColorHex(for color: NoteColor) -> String {
@@ -171,18 +235,21 @@ struct MemoNote: Codable, Equatable, Identifiable {
     mutating func normalize(fallbackIndex: Int) {
         title = Self.normalizedTitle(title, fallback: "메모\(max(1, fallbackIndex))")
         placement = MemoPlacement(groupID: placement.groupID, order: placement.order)
+        panelSize?.normalize()
         opacity = Self.normalizedUnitValue(opacity, fallback: 1)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case title
+        case isTitleExplicit
         case content
         case color
         case textColorHex
         case isActive
         case placement
         case aspectRatio
+        case panelSize
         case opacity
         case attachments
         case createdAt
@@ -199,12 +266,15 @@ struct MemoNote: Codable, Equatable, Identifiable {
                 ?? Self.deriveTitle(from: content, fallbackIndex: 1),
             fallback: "메모"
         )
+        isTitleExplicit = try container.decodeIfPresent(Bool.self, forKey: .isTitleExplicit) ?? false
         color = try container.decodeIfPresent(NoteColor.self, forKey: .color) ?? .black
         textColorHex = try container.decodeIfPresent(String.self, forKey: .textColorHex)
             ?? Self.defaultTextColorHex(for: color)
         isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
         placement = try container.decode(MemoPlacement.self, forKey: .placement)
         aspectRatio = try container.decodeIfPresent(MemoAspectRatio.self, forKey: .aspectRatio) ?? .portrait
+        panelSize = try container.decodeIfPresent(MemoPanelSize.self, forKey: .panelSize)
+        panelSize?.normalize()
         opacity = Self.normalizedUnitValue(
             try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1,
             fallback: 1
@@ -218,12 +288,14 @@ struct MemoNote: Codable, Equatable, Identifiable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
+        try container.encode(isTitleExplicit, forKey: .isTitleExplicit)
         try container.encode(content, forKey: .content)
         try container.encode(color, forKey: .color)
         try container.encode(textColorHex, forKey: .textColorHex)
         try container.encode(isActive, forKey: .isActive)
         try container.encode(placement, forKey: .placement)
         try container.encode(aspectRatio, forKey: .aspectRatio)
+        try container.encodeIfPresent(panelSize, forKey: .panelSize)
         try container.encode(opacity, forKey: .opacity)
         try container.encode(attachments, forKey: .attachments)
         try container.encode(createdAt, forKey: .createdAt)
@@ -235,7 +307,7 @@ struct MemoNote: Codable, Equatable, Identifiable {
             .split(whereSeparator: \Character.isWhitespace)
             .joined(separator: " ")
         let resolved = collapsed.isEmpty ? fallback : collapsed
-        return String(resolved.prefix(6))
+        return String(resolved.prefix(maxTitleLength))
     }
 
     private static func normalizedUnitValue(_ value: Double, fallback: Double) -> Double {

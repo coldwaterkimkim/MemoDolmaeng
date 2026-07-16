@@ -6,6 +6,7 @@ final class EdgeHandlePanelController: NSWindowController {
 
     private let handleView: EdgeHandleContentView
     private var edge: EdgeDock
+    private var targetFrame: CGRect
     private var shouldBeVisible = false
     private var visibilityGeneration = 0
 
@@ -22,11 +23,12 @@ final class EdgeHandlePanelController: NSWindowController {
     ) {
         noteID = note.id
         self.edge = edge
+        targetFrame = frame
 
         let handleView = EdgeHandleContentView(
-            title: note.title,
-            fillColor: NSColor(note.color.bodyColor),
-            textColor: Self.textColor(for: note.color),
+            title: note.displayTitle,
+            fillColor: Self.fillColor(for: note),
+            textColor: Self.textColor(for: note),
             edge: edge
         )
         self.handleView = handleView
@@ -46,7 +48,7 @@ final class EdgeHandlePanelController: NSWindowController {
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.title = note.title
+        panel.title = note.displayTitle
 
         super.init(window: panel)
 
@@ -68,12 +70,19 @@ final class EdgeHandlePanelController: NSWindowController {
         shouldBeVisible = true
         visibilityGeneration += 1
         let generation = visibilityGeneration
-        window.orderFrontRegardless()
+        if !window.isVisible {
+            window.setFrame(
+                EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge),
+                display: false
+            )
+            window.alphaValue = 0
+            window.orderFrontRegardless()
+        }
         if animated {
-            if window.alphaValue <= 0.01 { window.alphaValue = 0 }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = EdgeLayoutEngine.indexAnimationDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = EdgeLayoutEngine.indexRevealDuration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+                window.animator().setFrame(targetFrame, display: true)
                 window.animator().alphaValue = 1
             } completionHandler: { [weak self] in
                 Task { @MainActor in
@@ -85,7 +94,9 @@ final class EdgeHandlePanelController: NSWindowController {
                 }
             }
         } else {
+            window.setFrame(targetFrame, display: true)
             window.alphaValue = 1
+            window.orderFrontRegardless()
         }
     }
 
@@ -96,9 +107,11 @@ final class EdgeHandlePanelController: NSWindowController {
         let generation = visibilityGeneration
         guard window.isVisible else { return }
         if animated {
+            let hiddenFrame = EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge)
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = EdgeLayoutEngine.indexAnimationDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                context.duration = EdgeLayoutEngine.indexHideDuration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
+                window.animator().setFrame(hiddenFrame, display: true)
                 window.animator().alphaValue = 0
             } completionHandler: { [weak self] in
                 Task { @MainActor in
@@ -107,12 +120,16 @@ final class EdgeHandlePanelController: NSWindowController {
                           self.visibilityGeneration == generation
                     else { return }
                     window.orderOut(nil)
-                    window.alphaValue = 1
+                    window.alphaValue = 0
                 }
             }
         } else {
             window.orderOut(nil)
-            window.alphaValue = 1
+            window.setFrame(
+                EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge),
+                display: false
+            )
+            window.alphaValue = 0
         }
     }
 
@@ -124,20 +141,33 @@ final class EdgeHandlePanelController: NSWindowController {
         isDropTarget: Bool = false
     ) {
         self.edge = edge
+        targetFrame = frame
         handleView.update(
-            title: note.title,
-            fillColor: NSColor(note.color.bodyColor),
-            textColor: Self.textColor(for: note.color),
+            title: note.displayTitle,
+            fillColor: Self.fillColor(for: note),
+            textColor: Self.textColor(for: note),
             edge: edge,
             isSelected: isSelected,
             isDropTarget: isDropTarget
         )
-        window?.title = note.title
-        window?.setFrame(frame, display: true)
+        window?.title = note.displayTitle
+        if shouldBeVisible {
+            window?.setFrame(frame, display: true)
+        } else {
+            window?.setFrame(
+                EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: edge),
+                display: false
+            )
+        }
     }
 
-    private static func textColor(for color: NoteColor) -> NSColor {
-        color == .black ? .white : NSColor(calibratedWhite: 0.12, alpha: 1)
+    private static func fillColor(for note: MemoNote) -> NSColor {
+        NSColor(note.color.bodyColor).withAlphaComponent(note.opacity)
+    }
+
+    private static func textColor(for note: MemoNote) -> NSColor {
+        NSColor.memoColor(hex: note.textColorHex)
+            ?? (note.color == .black ? .white : NSColor(calibratedWhite: 0.12, alpha: 1))
     }
 }
 
@@ -247,39 +277,96 @@ private final class EdgeHandleContentView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
+        let path = handlePath(in: bounds.insetBy(dx: 0.5, dy: 0.5))
         fillColor.setFill()
         path.fill()
 
-        let stroke = isDropTarget ? NSColor.systemGreen : (isSelected ? .controlAccentColor : .separatorColor)
+        let stroke = isDropTarget
+            ? NSColor.systemGreen
+            : textColor.withAlphaComponent(isSelected ? 0.34 : 0.18)
         stroke.setStroke()
         path.lineWidth = isDropTarget ? 3 : (isSelected ? 2 : 1)
         path.stroke()
 
-        let font = NSFont.systemFont(ofSize: edge == .top ? 10 : 9.5, weight: .semibold)
+        let font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: textColor,
             .paragraphStyle: centeredParagraphStyle
         ]
 
-        if edge == .top {
-            title.draw(
-                in: bounds.insetBy(dx: 5, dy: 6),
-                withAttributes: attributes
-            )
-            return
+        title.draw(
+            in: bounds.insetBy(dx: 7, dy: 6),
+            withAttributes: attributes
+        )
+    }
+
+    private func handlePath(in rect: NSRect) -> NSBezierPath {
+        let radius = EdgeLayoutEngine.handleCornerRadius
+        var topLeft = radius
+        var topRight = radius
+        var bottomRight = radius
+        var bottomLeft = radius
+
+        if isSelected {
+            switch edge {
+            case .right:
+                topLeft = 0
+                bottomLeft = 0
+            case .left:
+                topRight = 0
+                bottomRight = 0
+            case .top:
+                bottomLeft = 0
+                bottomRight = 0
+            }
         }
 
-        let characters = Array(title.prefix(6)).map(String.init)
-        let lineHeight = min(CGFloat(11), max(6, bounds.height / CGFloat(max(1, characters.count))))
-        let totalHeight = CGFloat(characters.count) * lineHeight
-        var y = bounds.midY + totalHeight / 2 - lineHeight
-        for character in characters {
-            let rect = NSRect(x: 1, y: y, width: bounds.width - 2, height: lineHeight)
-            character.draw(in: rect, withAttributes: attributes)
-            y -= lineHeight
+        let kappa: CGFloat = 0.552_284_75
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: rect.minX + bottomLeft, y: rect.minY))
+        path.line(to: NSPoint(x: rect.maxX - bottomRight, y: rect.minY))
+        if bottomRight > 0 {
+            path.curve(
+                to: NSPoint(x: rect.maxX, y: rect.minY + bottomRight),
+                controlPoint1: NSPoint(x: rect.maxX - bottomRight + kappa * bottomRight, y: rect.minY),
+                controlPoint2: NSPoint(x: rect.maxX, y: rect.minY + bottomRight - kappa * bottomRight)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
         }
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - topRight))
+        if topRight > 0 {
+            path.curve(
+                to: NSPoint(x: rect.maxX - topRight, y: rect.maxY),
+                controlPoint1: NSPoint(x: rect.maxX, y: rect.maxY - topRight + kappa * topRight),
+                controlPoint2: NSPoint(x: rect.maxX - topRight + kappa * topRight, y: rect.maxY)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+        }
+        path.line(to: NSPoint(x: rect.minX + topLeft, y: rect.maxY))
+        if topLeft > 0 {
+            path.curve(
+                to: NSPoint(x: rect.minX, y: rect.maxY - topLeft),
+                controlPoint1: NSPoint(x: rect.minX + topLeft - kappa * topLeft, y: rect.maxY),
+                controlPoint2: NSPoint(x: rect.minX, y: rect.maxY - topLeft + kappa * topLeft)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.minX, y: rect.maxY))
+        }
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + bottomLeft))
+        if bottomLeft > 0 {
+            path.curve(
+                to: NSPoint(x: rect.minX + bottomLeft, y: rect.minY),
+                controlPoint1: NSPoint(x: rect.minX, y: rect.minY + bottomLeft - kappa * bottomLeft),
+                controlPoint2: NSPoint(x: rect.minX + bottomLeft - kappa * bottomLeft, y: rect.minY)
+            )
+        } else {
+            path.line(to: NSPoint(x: rect.minX, y: rect.minY))
+        }
+        path.close()
+        return path
     }
 
     private var centeredParagraphStyle: NSParagraphStyle {

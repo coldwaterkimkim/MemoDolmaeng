@@ -36,6 +36,9 @@ final class EdgeWorkspaceController: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var hideTask: Task<Void, Never>?
     private var foldTask: Task<Void, Never>?
+    private var hoverPreviewTask: Task<Void, Never>?
+    private var hoveredNoteID: UUID?
+    private var collapsingNoteID: UUID?
     private var observers: [NSObjectProtocol] = []
 
     init(store: NoteStore, preferences: EdgePreferences = .shared) {
@@ -51,6 +54,7 @@ final class EdgeWorkspaceController: ObservableObject {
         )
 
         panelController.onFold = { [weak self] in self?.closeMemo() }
+        panelController.onRequestIce = { [weak self] in self?.promotePeekToIce() }
         panelController.onPointerChange = { [weak self] inside in
             self?.pointerInsidePanel = inside
             self?.updatePeekDismissal()
@@ -65,6 +69,9 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         panelController.onCycle = { [weak self] direction in self?.cycleNote(direction: direction) }
         panelController.onSelectIndex = { [weak self] index in self?.selectNote(at: index) }
+        panelController.onResize = { [weak self] noteID, size in
+            self?.handlePanelResize(noteID: noteID, size: size)
+        }
         hotZoneController.onPointerChange = { [weak self] edge, inside in
             self?.handleHotZonePointer(edge: edge, inside: inside)
         }
@@ -98,6 +105,7 @@ final class EdgeWorkspaceController: ObservableObject {
         revealTask?.cancel()
         hideTask?.cancel()
         foldTask?.cancel()
+        hoverPreviewTask?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -120,13 +128,14 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         if let current = presentationState.noteID { finalizeTransientState(noteID: current) }
 
-        let colors: [NoteColor] = [.yellow, .blue, .green, .pink, .purple, .gray]
         let defaultAspect = MemoAspectRatio(rawValue: preferences.defaultAspectRawValue) ?? .square
         let timestamp = Date()
         draftNote = MemoNote(
             title: "새 메모",
             content: "",
-            color: colors[store.notes.count % colors.count],
+            color: NoteColor.randomMemoColor(
+                excluding: store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.color
+            ),
             isActive: true,
             placement: MemoPlacement(
                 groupID: store.defaultGroupID,
@@ -175,10 +184,26 @@ final class EdgeWorkspaceController: ObservableObject {
         let closingID = presentationState.noteID
         foldTask?.cancel()
         foldTask = nil
+        collapsingNoteID = closingID
         presentationState = .closed
-        panelController.fold()
-        if let closingID { finalizeTransientState(noteID: closingID) }
+        if let closingID,
+           pointerInsideHotZones.isEmpty,
+           pointerInsideHandles.isEmpty {
+            indexVisibility = .transitioning(closingID)
+        }
         refreshHandleSelection()
+        panelController.fold { [weak self] in
+            guard let self, self.collapsingNoteID == closingID else { return }
+            self.collapsingNoteID = nil
+            self.refreshHandleSelection()
+            if self.pointerInsideHotZones.isEmpty,
+               self.pointerInsideHandles.isEmpty,
+               self.draggingNoteID == nil {
+                self.indexVisibility = .hidden
+                self.applyIndexVisibility()
+            }
+        }
+        if let closingID { finalizeTransientState(noteID: closingID) }
         onPresentationChange?(false)
     }
 
@@ -245,6 +270,7 @@ final class EdgeWorkspaceController: ObservableObject {
     func updateTitle(noteID: UUID, title: String) {
         if var draft = draftNote, draft.id == noteID {
             draft.title = title
+            draft.isTitleExplicit = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             draftNote = draft
             reloadNotes()
         } else {
@@ -281,7 +307,10 @@ final class EdgeWorkspaceController: ObservableObject {
         if var draft = draftNote, draft.id == noteID {
             if let color { draft.color = color }
             if let textColorHex { draft.textColorHex = textColorHex }
-            if let aspectRatio { draft.aspectRatio = aspectRatio }
+            if let aspectRatio {
+                draft.aspectRatio = aspectRatio
+                draft.panelSize = nil
+            }
             if let opacity { draft.opacity = opacity }
             draftNote = draft
             reloadNotes()
@@ -333,6 +362,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func open(noteID: UUID, ice: Bool) {
+        collapsingNoteID = nil
         if let current = presentationState.noteID, current != noteID {
             finalizeTransientState(noteID: current)
         }
@@ -350,7 +380,8 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            aspectRatio: note.aspectRatio.value
+            aspectRatio: note.aspectRatio.value,
+            panelSize: note.panelSize
         )
 
         presentationState = ice ? .ice(noteID) : .peek(noteID)
@@ -358,10 +389,15 @@ final class EdgeWorkspaceController: ObservableObject {
         panelController.show(
             note: note,
             frame: panelFrame,
+            handleFrame: handleFrame,
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            isIce: ice
+            isIce: ice,
+            focusEditor: ice,
+            onTitleChange: { [weak self] title in
+                self?.handlePanelTitleChange(noteID: noteID, title: title)
+            }
         ) { [weak self] content in
             self?.handleContentChange(noteID: noteID, content: content)
         }
@@ -406,6 +442,62 @@ final class EdgeWorkspaceController: ObservableObject {
         }
     }
 
+    private func handlePanelTitleChange(noteID: UUID, title: String) {
+        if var draft = draftNote, draft.id == noteID {
+            draft.title = title
+            draft.isTitleExplicit = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            draftNote = draft
+        } else {
+            store.updateTitle(noteID: noteID, title: title)
+            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
+        }
+        reloadNotes()
+        refreshLayoutSnapshot()
+        refreshHandles()
+        repositionOpenPanel(noteID: noteID)
+    }
+
+    private func handlePanelResize(noteID: UUID, size: CGSize) {
+        if var draft = draftNote, draft.id == noteID {
+            draft.panelSize = MemoPanelSize(size)
+            draftNote = draft
+        } else {
+            store.updatePanelSize(noteID: noteID, size: size)
+            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
+        }
+        reloadNotes()
+        refreshLayout()
+    }
+
+    private func promotePeekToIce() {
+        guard case let .peek(noteID) = presentationState else { return }
+        open(noteID: noteID, ice: true)
+    }
+
+    private func repositionOpenPanel(noteID: UUID) {
+        guard presentationState.noteID == noteID,
+              let note = note(withID: noteID),
+              let handleFrame = layoutSnapshot.handleFrames[noteID],
+              let edge = edge(for: noteID)
+        else { return }
+        let screen = targetScreen()
+        let frame = EdgeLayoutEngine.panelFrame(
+            adjacentTo: handleFrame,
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            edge: edge,
+            aspectRatio: note.aspectRatio.value,
+            panelSize: note.panelSize
+        )
+        panelController.reposition(
+            frame: frame,
+            handleFrame: handleFrame,
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            edge: edge
+        )
+    }
+
     private func refreshLayout() {
         let screen = targetScreen()
         hotZoneController.update(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
@@ -422,16 +514,21 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            aspectRatio: note.aspectRatio.value
+            aspectRatio: note.aspectRatio.value,
+            panelSize: note.panelSize
         )
         panelController.show(
             note: note,
             frame: panelFrame,
+            handleFrame: handleFrame,
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
             isIce: presentationState.isIce,
-            focusEditor: false
+            focusEditor: false,
+            onTitleChange: { [weak self] title in
+                self?.handlePanelTitleChange(noteID: noteID, title: title)
+            }
         ) { [weak self] content in
             self?.handleContentChange(noteID: noteID, content: content)
         }
@@ -465,7 +562,7 @@ final class EdgeWorkspaceController: ObservableObject {
                     note: note,
                     frame: frame,
                     edge: edge,
-                    isSelected: presentationState.noteID == note.id,
+                    isSelected: presentationState.noteID == note.id || collapsingNoteID == note.id,
                     isDropTarget: note.placement.groupID == dropTargetGroupID
                 )
             } else {
@@ -496,7 +593,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 note: note,
                 frame: frame,
                 edge: edge,
-                isSelected: presentationState.noteID == note.id,
+                isSelected: presentationState.noteID == note.id || collapsingNoteID == note.id,
                 isDropTarget: note.placement.groupID == dropTargetGroupID
             )
         }
@@ -519,12 +616,42 @@ final class EdgeWorkspaceController: ObservableObject {
     private func handleIndexPointer(noteID: UUID, inside: Bool) {
         if inside {
             pointerInsideHandles.insert(noteID)
+            hoveredNoteID = noteID
             hideTask?.cancel()
+            scheduleHoverPreview(noteID: noteID)
         } else {
             pointerInsideHandles.remove(noteID)
+            if hoveredNoteID == noteID {
+                hoveredNoteID = nil
+                hoverPreviewTask?.cancel()
+            }
             scheduleHideIndices()
         }
         updatePeekDismissal()
+    }
+
+    private func scheduleHoverPreview(noteID: UUID) {
+        guard draggingNoteID == nil, !presentationState.isIce else { return }
+        hoverPreviewTask?.cancel()
+        let delay = presentationState.noteID == nil ? 0.10 : 0.04
+        hoverPreviewTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.draggingNoteID == nil,
+                      !self.presentationState.isIce,
+                      self.hoveredNoteID == noteID,
+                      self.pointerInsideHandles.contains(noteID)
+                else { return }
+                let nextState = EdgePresentationReducer.reduce(
+                    state: self.presentationState,
+                    action: .hover(noteID)
+                )
+                guard nextState.noteID == noteID else { return }
+                self.open(noteID: noteID, ice: false)
+            }
+        }
     }
 
     private func scheduleReveal(edge: EdgeDock) {
@@ -542,14 +669,21 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func scheduleHideIndices() {
-        guard draggingNoteID == nil else { return }
+        guard draggingNoteID == nil,
+              collapsingNoteID == nil,
+              !isPeekPresented
+        else { return }
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(for: .seconds(preferences.hideDelay))
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard self.pointerInsideHotZones.isEmpty, self.pointerInsideHandles.isEmpty else { return }
+                guard self.pointerInsideHotZones.isEmpty,
+                      self.pointerInsideHandles.isEmpty,
+                      self.collapsingNoteID == nil,
+                      !self.isPeekPresented
+                else { return }
                 self.indexVisibility = .hidden
                 self.applyIndexVisibility()
             }
@@ -565,6 +699,8 @@ final class EdgeWorkspaceController: ObservableObject {
                 shouldShow = false
             case let .visible(visibleEdge):
                 shouldShow = edge == visibleEdge
+            case let .transitioning(noteID):
+                shouldShow = note.id == noteID
             case .dragging:
                 shouldShow = true
             }
@@ -575,6 +711,8 @@ final class EdgeWorkspaceController: ObservableObject {
     private func beginDrag(noteID: UUID) {
         revealTask?.cancel()
         hideTask?.cancel()
+        hoverPreviewTask?.cancel()
+        hoveredNoteID = nil
         draggingNoteID = noteID
         indexVisibility = .dragging(noteID)
         hotZoneController.setDragging(true)
@@ -705,6 +843,11 @@ final class EdgeWorkspaceController: ObservableObject {
                 self.closeMemo()
             }
         }
+    }
+
+    private var isPeekPresented: Bool {
+        if case .peek = presentationState { return true }
+        return false
     }
 
     private func importImage(noteID: UUID, data: Data, originalName: String) throws -> URL {

@@ -111,6 +111,7 @@ final class AppPreferences: ObservableObject {
     private let defaults: UserDefaults
 
     private init(defaults: UserDefaults = .standard) {
+        Self.migrateCompactTypographyIfNeeded(defaults: defaults)
         self.defaults = defaults
         textColor = Self.color(forKey: Key.textColor, default: Defaults.textColor, defaults: defaults)
         strokeColor = Self.color(forKey: Key.strokeColor, default: Defaults.strokeColor, defaults: defaults)
@@ -181,6 +182,24 @@ final class AppPreferences: ObservableObject {
         NotificationCenter.default.post(name: .memoDolmaengPreferencesChanged, object: self)
     }
 
+    private static func migrateCompactTypographyIfNeeded(defaults: UserDefaults) {
+        guard !defaults.bool(forKey: Key.compactTypographyV1) else { return }
+        let migrations: [(String, Double, Double)] = [
+            (Key.bodyFontSize, 12, Double(Defaults.bodyFontSize)),
+            (Key.heading1FontSize, 19, Double(Defaults.heading1FontSize)),
+            (Key.heading2FontSize, 16.5, Double(Defaults.heading2FontSize)),
+            (Key.heading3FontSize, 14, Double(Defaults.heading3FontSize)),
+            (Key.codeFontSize, 12, Double(Defaults.codeFontSize))
+        ]
+        for (key, oldDefault, newDefault) in migrations {
+            let storedValue = (defaults.object(forKey: key) as? NSNumber)?.doubleValue
+            if storedValue == nil || abs((storedValue ?? oldDefault) - oldDefault) < 0.001 {
+                defaults.set(newDefault, forKey: key)
+            }
+        }
+        defaults.set(true, forKey: Key.compactTypographyV1)
+    }
+
     private static func value(forKey key: String, default defaultValue: CGFloat, defaults: UserDefaults) -> CGFloat {
         guard defaults.object(forKey: key) != nil else { return defaultValue }
         return CGFloat(defaults.double(forKey: key))
@@ -232,6 +251,7 @@ final class AppPreferences: ObservableObject {
         static let heading2FontSize = "preferences.heading2FontSize"
         static let heading3FontSize = "preferences.heading3FontSize"
         static let codeFontSize = "preferences.codeFontSize"
+        static let compactTypographyV1 = "preferences.compactTypographyV1"
         static let paragraphSpacing = "preferences.paragraphSpacing"
         static let heading1Spacing = "preferences.heading1Spacing"
         static let heading2Spacing = "preferences.heading2Spacing"
@@ -256,11 +276,11 @@ final class AppPreferences: ObservableObject {
         static let windowEdgeStrokeColor = NSColor.black
         static let windowEdgeStrokeWidth: CGFloat = 0.5
         static let windowEdgeStrokeOpacity: CGFloat = 0.22
-        static let bodyFontSize: CGFloat = 12
-        static let heading1FontSize: CGFloat = 19
-        static let heading2FontSize: CGFloat = 16.5
-        static let heading3FontSize: CGFloat = 14
-        static let codeFontSize: CGFloat = 12
+        static let bodyFontSize: CGFloat = 11
+        static let heading1FontSize: CGFloat = 18
+        static let heading2FontSize: CGFloat = 15.5
+        static let heading3FontSize: CGFloat = 13
+        static let codeFontSize: CGFloat = 11
         static let paragraphSpacing: CGFloat = 2
         static let heading1Spacing: CGFloat = 4
         static let heading2Spacing: CGFloat = 3

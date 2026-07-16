@@ -25,9 +25,28 @@ final class EdgeLayoutEngineTests: XCTestCase {
 
         XCTAssertEqual(frames.count, 3)
         XCTAssertTrue(frames.allSatisfy { abs($0.maxX - screen.maxX) < 0.001 })
+        XCTAssertTrue(frames.allSatisfy { $0.height == EdgeLayoutEngine.sideHandleHeight })
+        XCTAssertTrue(frames.allSatisfy { $0.width > $0.height })
         XCTAssertEqual(frames[0].minY, frames[1].maxY, accuracy: 0.001)
         XCTAssertEqual(frames[1].minY, frames[2].maxY, accuracy: 0.001)
         XCTAssertEqual(snapshot.groupFrames[group.id]?.midY ?? 0, visible.midY, accuracy: 0.001)
+    }
+
+    func testSideHandleExpandsForFullDisplayTitle() throws {
+        let group = MemoEdgeGroup(edge: .right, normalizedCenter: 0.5)
+        let memo = note(title: "메모돌멩 수정사항", groupID: group.id, order: 0)
+        let snapshot = EdgeLayoutEngine.layout(
+            notes: [memo],
+            groups: [group],
+            defaultGroupID: group.id,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        let frame = try XCTUnwrap(snapshot.handleFrames[memo.id])
+
+        XCTAssertGreaterThan(frame.width, 120)
+        XCTAssertEqual(frame.maxX, screen.maxX, accuracy: 0.001)
+        XCTAssertEqual(frame.height, EdgeLayoutEngine.sideHandleHeight, accuracy: 0.001)
     }
 
     func testManualGroupKeepsPositionAndDefaultGroupMovesOutOfCollision() {
@@ -103,6 +122,107 @@ final class EdgeLayoutEngineTests: XCTestCase {
                 XCTAssertEqual(panel.maxX, handle.minX, accuracy: 0.001)
             }
         }
+    }
+
+    func testPanelUsesStoredSizeAndKeepsItsDockedEdge() {
+        let handle = CGRect(x: screen.maxX - 100, y: 430, width: 100, height: 26)
+        let storedSize = MemoPanelSize(width: 512, height: 388)
+        let panel = EdgeLayoutEngine.panelFrame(
+            adjacentTo: handle,
+            screenFrame: screen,
+            visibleFrame: visible,
+            edge: .right,
+            aspectRatio: MemoAspectRatio.square.value,
+            panelSize: storedSize
+        )
+
+        XCTAssertEqual(panel.size.width, 512, accuracy: 0.001)
+        XCTAssertEqual(panel.size.height, 388, accuracy: 0.001)
+        XCTAssertEqual(panel.maxX, handle.minX, accuracy: 0.001)
+    }
+
+    func testStoredPanelSizeIsClampedToVisibleScreen() {
+        let tinyVisible = CGRect(x: 0, y: 0, width: 260, height: 210)
+        let handle = CGRect(x: 260, y: 100, width: 80, height: 26)
+        let panel = EdgeLayoutEngine.panelFrame(
+            adjacentTo: handle,
+            screenFrame: CGRect(x: 0, y: 0, width: 340, height: 210),
+            visibleFrame: tinyVisible,
+            edge: .left,
+            aspectRatio: MemoAspectRatio.portrait.value,
+            panelSize: MemoPanelSize(width: 720, height: 900)
+        )
+
+        XCTAssertEqual(panel.width, tinyVisible.width, accuracy: 0.001)
+        XCTAssertEqual(panel.height, tinyVisible.height, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(panel.minY, tinyVisible.minY)
+        XCTAssertLessThanOrEqual(panel.maxY, tinyVisible.maxY)
+    }
+
+    func testPanelRevealAnchorsTouchEachHandleEdge() {
+        let panel = CGRect(x: 100, y: 100, width: 340, height: 400)
+
+        let right = EdgeLayoutEngine.panelRevealAnchorRect(
+            panelFrame: panel,
+            handleFrame: CGRect(x: 440, y: 474, width: 90, height: 26),
+            edge: .right
+        )
+        XCTAssertEqual(right.maxX, panel.width, accuracy: 0.001)
+        XCTAssertEqual(right.minY, 374, accuracy: 0.001)
+        XCTAssertEqual(right.height, 26, accuracy: 0.001)
+
+        let left = EdgeLayoutEngine.panelRevealAnchorRect(
+            panelFrame: panel,
+            handleFrame: CGRect(x: 10, y: 250, width: 90, height: 26),
+            edge: .left
+        )
+        XCTAssertEqual(left.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(left.minY, 150, accuracy: 0.001)
+
+        let top = EdgeLayoutEngine.panelRevealAnchorRect(
+            panelFrame: panel,
+            handleFrame: CGRect(x: 220, y: 500, width: 100, height: 26),
+            edge: .top
+        )
+        XCTAssertEqual(top.minX, 120, accuracy: 0.001)
+        XCTAssertEqual(top.maxY, panel.height, accuracy: 0.001)
+        XCTAssertEqual(top.width, 100, accuracy: 0.001)
+    }
+
+    func testHiddenFramesMoveOutwardFromEachEdge() {
+        let frame = CGRect(x: 100, y: 200, width: 80, height: 26)
+        XCTAssertLessThan(
+            EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: .left).minX,
+            frame.minX
+        )
+        XCTAssertGreaterThan(
+            EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: .right).minX,
+            frame.minX
+        )
+        XCTAssertGreaterThan(
+            EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: .top).minY,
+            frame.minY
+        )
+
+        let panel = CGRect(x: 300, y: 150, width: 340, height: 340)
+        XCTAssertGreaterThan(
+            EdgeLayoutEngine.collapsedPanelFrame(
+                for: panel,
+                edge: .right,
+                screenFrame: screen,
+                visibleFrame: visible
+            ).minX,
+            screen.maxX
+        )
+        XCTAssertLessThan(
+            EdgeLayoutEngine.collapsedPanelFrame(
+                for: panel,
+                edge: .left,
+                screenFrame: screen,
+                visibleFrame: visible
+            ).maxX,
+            screen.minX
+        )
     }
 
     func testDropEdgeAndNormalizedCenterUseVisibleFrame() {
@@ -225,16 +345,18 @@ final class EdgeScreenSelectorTests: XCTestCase {
 }
 
 final class EdgePresentationReducerTests: XCTestCase {
-    func testClickOpensPeekAndSecondClickCloses() {
+    func testHoverOpensPeekAndClickPinsIce() {
         let id = UUID()
-        let opened = EdgePresentationReducer.reduce(state: .closed, action: .click(id))
+        let opened = EdgePresentationReducer.reduce(state: .closed, action: .hover(id))
         XCTAssertEqual(opened, .peek(id))
-        XCTAssertEqual(EdgePresentationReducer.reduce(state: opened, action: .click(id)), .closed)
+        XCTAssertEqual(EdgePresentationReducer.reduce(state: opened, action: .click(id)), .ice(id))
+        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(id), action: .click(id)), .closed)
     }
 
-    func testIceSurvivesSwitchingNotes() {
+    func testIceSurvivesHoverAndClickSwitchesNotes() {
         let first = UUID()
         let second = UUID()
+        XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(first), action: .hover(second)), .ice(first))
         XCTAssertEqual(EdgePresentationReducer.reduce(state: .ice(first), action: .click(second)), .ice(second))
     }
 

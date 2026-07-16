@@ -37,7 +37,7 @@ struct LibraryView: View {
                 .width(42)
 
                 TableColumn("제목") { note in
-                    Button(note.title) {
+                    Button(note.displayTitle) {
                         workspace.openFromLibrary(noteID: note.id)
                     }
                     .buttonStyle(.plain)
@@ -103,7 +103,7 @@ struct LibraryView: View {
 
     private func confirmDelete(_ note: MemoNote) {
         let alert = NSAlert()
-        alert.messageText = "‘\(note.title)’ 메모를 삭제할까?"
+        alert.messageText = "‘\(note.displayTitle)’ 메모를 삭제할까?"
         alert.informativeText = "본문과 메모에 복사된 이미지가 함께 삭제되며 되돌릴 수 없어."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "삭제")
