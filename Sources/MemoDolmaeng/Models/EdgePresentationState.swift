@@ -7,6 +7,12 @@ enum EdgeDock: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    static let interactiveCases: [EdgeDock] = [.left, .right]
+
+    var interactiveSide: EdgeDock {
+        self == .left ? .left : .right
+    }
+
     var title: String {
         switch self {
         case .left: "왼쪽"

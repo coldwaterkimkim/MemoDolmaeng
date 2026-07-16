@@ -10,7 +10,7 @@ final class EdgeHotZoneController {
     var onPointerChange: ((EdgeDock, Bool) -> Void)?
 
     init() {
-        for edge in EdgeDock.allCases {
+        for edge in EdgeDock.interactiveCases {
             let view = EdgeHotZoneView(edge: edge)
             let panel = NSPanel(
                 contentRect: .zero,
@@ -19,9 +19,7 @@ final class EdgeHotZoneController {
                 defer: false
             )
             panel.contentView = view
-            panel.level = edge == .top
-                ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-                : .floating
+            panel.level = .floating
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = false
@@ -43,7 +41,7 @@ final class EdgeHotZoneController {
 
     func setDragging(_ dragging: Bool, targetEdge: EdgeDock? = nil) {
         let thickness: CGFloat = dragging ? 20 : 2
-        for edge in EdgeDock.allCases {
+        for edge in EdgeDock.interactiveCases {
             panels[edge]?.setFrame(
                 EdgeLayoutEngine.hotZoneFrame(
                     edge: edge,

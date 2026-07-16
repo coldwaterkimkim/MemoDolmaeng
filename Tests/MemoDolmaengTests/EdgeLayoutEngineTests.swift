@@ -32,6 +32,40 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertEqual(snapshot.groupFrames[group.id]?.maxY ?? 0, visible.maxY, accuracy: 0.001)
     }
 
+    func testLauncherTrayFollowsCursorAndShowsSameOrderOnBothSides() throws {
+        let group = MemoEdgeGroup(edge: .top, normalizedCenter: 0.5)
+        let notes = [
+            note(title: "첫째", groupID: group.id, order: 0),
+            note(title: "둘째", groupID: group.id, order: 1),
+            note(title: "셋째", groupID: group.id, order: 2)
+        ]
+        let anchorY: CGFloat = 360
+        let left = EdgeLayoutEngine.launcherLayout(
+            notes: notes,
+            edge: .left,
+            anchorY: anchorY,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        let right = EdgeLayoutEngine.launcherLayout(
+            notes: notes,
+            edge: .right,
+            anchorY: anchorY,
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+
+        let leftFrames = try notes.map { try XCTUnwrap(left.handleFrames[$0.id]) }
+        let rightFrames = try notes.map { try XCTUnwrap(right.handleFrames[$0.id]) }
+        XCTAssertEqual(leftFrames.map(\.midY), rightFrames.map(\.midY))
+        XCTAssertTrue(leftFrames.allSatisfy { $0.minX == screen.minX })
+        XCTAssertTrue(rightFrames.allSatisfy { $0.maxX == screen.maxX })
+        let union = leftFrames.dropFirst().reduce(leftFrames[0]) { $0.union($1) }
+        XCTAssertEqual(union.midY, anchorY, accuracy: 0.001)
+        XCTAssertGreaterThan(leftFrames[0].midY, leftFrames[1].midY)
+        XCTAssertGreaterThan(leftFrames[1].midY, leftFrames[2].midY)
+    }
+
     func testSideHandleExpandsForFullDisplayTitle() throws {
         let group = MemoEdgeGroup(edge: .right, normalizedCenter: 0.5)
         let memo = note(title: "메모돌멩 수정사항", groupID: group.id, order: 0)
@@ -311,16 +345,14 @@ final class EdgeLayoutEngineTests: XCTestCase {
         )
     }
 
-    func testTopHotZoneAndDropTargetUsePhysicalScreenTop() {
+    func testOnlySideEdgesHaveInteractiveHotZonesAndDropTargets() {
         let topHotZone = EdgeLayoutEngine.hotZoneFrame(
             edge: .top,
             thickness: 2,
             screenFrame: screen,
             visibleFrame: visible
         )
-        XCTAssertEqual(topHotZone.maxY, screen.maxY, accuracy: 0.001)
-        XCTAssertEqual(topHotZone.minY, screen.maxY - 2, accuracy: 0.001)
-        XCTAssertEqual(topHotZone.width, screen.width, accuracy: 0.001)
+        XCTAssertEqual(topHotZone, .zero)
 
         XCTAssertEqual(
             EdgeLayoutEngine.dock(
@@ -330,13 +362,12 @@ final class EdgeLayoutEngineTests: XCTestCase {
             ),
             .right
         )
-        XCTAssertEqual(
+        XCTAssertNil(
             EdgeLayoutEngine.dock(
                 at: CGPoint(x: screen.midX, y: screen.maxY - 1),
                 screenFrame: screen,
                 visibleFrame: visible
-            ),
-            .top
+            )
         )
         XCTAssertNil(
             EdgeLayoutEngine.dock(

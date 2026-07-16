@@ -315,16 +315,46 @@ final class NoteStore {
         )
     }
 
+    @discardableResult
+    func setGlobalIndexOrder(_ requestedIDs: [UUID]) -> Bool {
+        let activeIDs = Set(activeNotes().map(\.id))
+        var seen: Set<UUID> = []
+        var orderedIDs = requestedIDs.filter { activeIDs.contains($0) && seen.insert($0).inserted }
+        orderedIDs.append(contentsOf: activeNotes().map(\.id).filter { seen.insert($0).inserted })
+
+        var groups = edgeGroups
+        let preferredSide = defaultGroup.edge.interactiveSide
+        let canonicalGroup: MemoEdgeGroup
+        if let existing = groups.first(where: { $0.edge == preferredSide }) {
+            canonicalGroup = existing
+        } else {
+            let created = MemoEdgeGroup(edge: preferredSide, normalizedCenter: 1, createdAt: now())
+            groups.append(created)
+            canonicalGroup = created
+        }
+
+        let orderByID = Dictionary(uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) })
+        var updatedNotes = notes
+        for index in updatedNotes.indices where updatedNotes[index].isActive {
+            updatedNotes[index].placement = MemoPlacement(
+                groupID: canonicalGroup.id,
+                order: orderByID[updatedNotes[index].id] ?? Int.max
+            )
+        }
+        return commit(notes: updatedNotes, groups: groups, defaultGroupID: canonicalGroup.id)
+    }
+
     func setDefaultEdge(_ edge: EdgeDock) {
-        if let existing = edgeGroups.first(where: { $0.edge == edge }) {
+        let side = edge.interactiveSide
+        if let existing = edgeGroups.first(where: { $0.edge == side }) {
             guard existing.id != defaultGroupID else { return }
             _ = commit(notes: notes, groups: edgeGroups, defaultGroupID: existing.id)
             return
         }
         var updatedGroups = edgeGroups
         let group = MemoEdgeGroup(
-            edge: edge,
-            normalizedCenter: edge == .top ? 0.5 : 1,
+            edge: side,
+            normalizedCenter: 1,
             createdAt: now()
         )
         updatedGroups.append(group)

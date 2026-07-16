@@ -47,7 +47,9 @@ final class EdgePreferences: ObservableObject {
         self.defaults = defaults
         let storedEdge = defaults.string(forKey: Key.defaultEdge)
             ?? defaults.string(forKey: Key.legacySide)
-        defaultEdge = EdgeDock(rawValue: storedEdge ?? "") ?? .right
+        let resolvedEdge = (EdgeDock(rawValue: storedEdge ?? "") ?? .right).interactiveSide
+        defaultEdge = resolvedEdge
+        defaults.set(resolvedEdge.rawValue, forKey: Key.defaultEdge)
         if defaults.object(forKey: Key.targetDisplayID) != nil {
             targetDisplayID = UInt32(defaults.integer(forKey: Key.targetDisplayID))
         } else {

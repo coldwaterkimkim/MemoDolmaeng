@@ -79,6 +79,31 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
     }
 
+    func testIceOpenedOnEitherSideLeavesTheSharedIndexList() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let leftNote = try store.createNote(title: "왼쪽 ICE", content: "왼쪽")
+        let rightNote = try store.createNote(title: "오른쪽 ICE", content: "오른쪽")
+        let availableNote = try store.createNote(title: "남은 인덱스", content: "남음")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: leftNote.id, on: .left)
+        workspace.handleClick(noteID: rightNote.id, on: .right)
+
+        XCTAssertEqual(Set(workspace.availableIndexNotes.map(\.id)), Set([availableNote.id]))
+        XCTAssertEqual(workspace.edge(for: leftNote.id), .left)
+        XCTAssertEqual(workspace.edge(for: rightNote.id), .right)
+
+        workspace.closeMemo(noteID: leftNote.id)
+        workspace.closeMemo(noteID: rightNote.id)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(Set(workspace.availableIndexNotes.map(\.id)), Set([leftNote.id, rightNote.id, availableNote.id]))
+    }
+
     func testProgrammaticOpenAndFoldDoNotPersistAResize() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
@@ -132,10 +157,10 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         let workspace = EdgeWorkspaceController(store: store)
         workspace.start()
 
-        workspace.createNote(on: .top)
+        workspace.createNote(on: .left)
 
         let draft = try XCTUnwrap(workspace.activeNotes.first)
-        XCTAssertEqual(workspace.edge(for: draft.id), .top)
+        XCTAssertEqual(workspace.edge(for: draft.id), .left)
         XCTAssertTrue(workspace.presentationState.isIce(draft.id))
         XCTAssertTrue(store.notes.isEmpty, "An untouched edge draft must not reach disk")
 

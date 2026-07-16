@@ -30,8 +30,8 @@ struct PreferencesView: View {
                 }
             }
 
-            Picker("기본 가장자리", selection: $edgePreferences.defaultEdge) {
-                ForEach(EdgeDock.allCases) { edge in Text(edge.title).tag(edge) }
+            Picker("기본 ICE 엣지", selection: $edgePreferences.defaultEdge) {
+                ForEach(EdgeDock.interactiveCases) { edge in Text(edge.title).tag(edge) }
             }
             .pickerStyle(.segmented)
 
@@ -62,18 +62,6 @@ struct PreferencesView: View {
                     get: { note.displayTitle },
                     set: { workspace.updateTitle(noteID: note.id, title: $0) }
                 ))
-
-                LabeledContent("현재 배치") {
-                    HStack {
-                        Text(workspace.edge(for: note.id)?.title ?? "기본")
-                            .foregroundStyle(.secondary)
-                        Button {
-                            workspace.attachToDefaultGroup(noteID: note.id)
-                        } label: {
-                            Label("기본 엣지로 이동", systemImage: "rectangle.3.group")
-                        }
-                    }
-                }
 
                 if let panelSize = note.panelSize {
                     LabeledContent("ICE 폭") {

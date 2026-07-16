@@ -269,6 +269,24 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(store.edgeGroups.filter { $0.edge == .left }.count, 1)
     }
 
+    func testGlobalIndexOrderFlattensActiveNotesWithoutChangingContent() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let first = try store.createNote(title: "첫째", content: "첫 본문")
+        let second = try store.createNote(title: "둘째", content: "둘째 본문")
+        let third = try store.createNote(title: "셋째", content: "셋째 본문")
+        XCTAssertTrue(store.placeNote(noteID: second.id, edge: .top, normalizedCenter: 0.5, mergeInto: nil, order: 0))
+
+        XCTAssertTrue(store.setGlobalIndexOrder([third.id, first.id, second.id]))
+
+        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+        XCTAssertEqual(ordered.map(\.id), [third.id, first.id, second.id])
+        XCTAssertEqual(ordered.map(\.content), ["셋째 본문", "첫 본문", "둘째 본문"])
+        XCTAssertTrue(ordered.allSatisfy { $0.placement.groupID == store.defaultGroupID })
+        XCTAssertNotEqual(store.defaultGroup.edge, .top)
+    }
+
     func testTitleDerivationAndMeaningfulContentDetection() {
         XCTAssertEqual(
             MemoNote.deriveTitle(from: "\n  \n### **오늘 할 일 정리**", fallbackIndex: 3),

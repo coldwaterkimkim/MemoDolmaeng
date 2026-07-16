@@ -51,13 +51,73 @@ enum EdgeLayoutEngine {
                 height: visibleFrame.height
             )
         case .top:
-            CGRect(
-                x: screenFrame.minX,
-                y: screenFrame.maxY - thickness,
-                width: screenFrame.width,
-                height: thickness
-            )
+            .zero
         }
+    }
+
+    static func launcherLayout(
+        notes: [MemoNote],
+        edge: EdgeDock,
+        anchorY: CGFloat,
+        screenFrame: CGRect,
+        visibleFrame: CGRect
+    ) -> EdgeLayoutSnapshot {
+        let side = edge.interactiveSide
+        let ordered = notes.filter(\.isActive)
+        guard !ordered.isEmpty else { return .empty }
+
+        let height = min(sideHandleHeight, visibleFrame.height / CGFloat(ordered.count))
+        let totalHeight = height * CGFloat(ordered.count)
+        let centeredTop = anchorY + totalHeight / 2
+        let top = min(
+            visibleFrame.maxY,
+            max(visibleFrame.minY + totalHeight, centeredTop)
+        )
+        var y = top
+        var frames: [UUID: CGRect] = [:]
+        for note in ordered {
+            y -= height
+            let width = sideHandleWidth(for: note.displayTitle)
+            let x = side == .right ? screenFrame.maxX - width : screenFrame.minX
+            frames[note.id] = CGRect(x: x, y: y, width: width, height: height)
+        }
+        return EdgeLayoutSnapshot(handleFrames: frames, groupFrames: [:])
+    }
+
+    static func launcherControlFrame(
+        edge: EdgeDock,
+        anchorY: CGFloat,
+        handleFrames: [CGRect],
+        screenFrame: CGRect,
+        visibleFrame: CGRect
+    ) -> CGRect {
+        let side = edge.interactiveSide
+        let x = side == .right ? screenFrame.maxX - edgeControlSize.width : screenFrame.minX
+        guard let first = handleFrames.first else {
+            let y = min(
+                visibleFrame.maxY - edgeControlSize.height,
+                max(visibleFrame.minY, anchorY - edgeControlSize.height / 2)
+            )
+            return CGRect(origin: CGPoint(x: x, y: y), size: edgeControlSize)
+        }
+        let union = handleFrames.dropFirst().reduce(first) { $0.union($1) }
+        let below = union.minY - groupGap - edgeControlSize.height
+        let y = below >= visibleFrame.minY
+            ? below
+            : min(visibleFrame.maxY - edgeControlSize.height, union.maxY + groupGap)
+        return CGRect(origin: CGPoint(x: x, y: y), size: edgeControlSize)
+    }
+
+    static func launcherInsertionOrder(
+        at point: CGPoint,
+        orderedNotes: [MemoNote],
+        snapshot: EdgeLayoutSnapshot
+    ) -> Int {
+        for (index, note) in orderedNotes.enumerated() {
+            guard let frame = snapshot.handleFrames[note.id] else { continue }
+            if point.y > frame.midY { return index }
+        }
+        return orderedNotes.count
     }
 
     static func sideHandleWidth(for title: String) -> CGFloat {
@@ -325,8 +385,7 @@ enum EdgeLayoutEngine {
     ) -> EdgeDock? {
         let candidates: [(EdgeDock, CGFloat)] = [
             (.left, abs(point.x - screenFrame.minX)),
-            (.right, abs(point.x - screenFrame.maxX)),
-            (.top, abs(point.y - screenFrame.maxY))
+            (.right, abs(point.x - screenFrame.maxX))
         ]
         guard let nearest = candidates.min(by: { $0.1 < $1.1 }), nearest.1 <= edgeDropDistance else {
             return nil
