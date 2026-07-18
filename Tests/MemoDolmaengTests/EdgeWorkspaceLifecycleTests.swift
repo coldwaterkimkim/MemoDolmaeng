@@ -87,6 +87,46 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
     }
 
+    func testNewestIceKeepsItsClickedIndexHeightAndReflowsThePreviousPanel() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let first = try store.createNote(title: "첫 메모", content: "첫 본문")
+        let second = try store.createNote(title: "둘째 메모", content: "둘째 본문")
+        let third = try store.createNote(title: "셋째 메모", content: "셋째 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: first.id)
+        let screen = try XCTUnwrap(NSScreen.main)
+        let expectedSecondHandle = try XCTUnwrap(
+            EdgeLayoutEngine.launcherLayout(
+                notes: [second, third],
+                edge: .right,
+                anchorY: screen.visibleFrame.midY,
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame
+            ).handleFrames[second.id]
+        )
+        workspace.handleClick(noteID: second.id)
+        try await Task.sleep(for: .milliseconds(300))
+
+        let firstPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(first.id.uuidString)")
+        })
+        let secondPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(second.id.uuidString)")
+        })
+        XCTAssertEqual(secondPanel.frame.maxY, expectedSecondHandle.maxY, accuracy: 1)
+        XCTAssertLessThanOrEqual(firstPanel.frame.intersection(secondPanel.frame).height, 1)
+
+        workspace.closeMemo(noteID: first.id)
+        workspace.closeMemo(noteID: second.id)
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
     func testClickingEarlierIceChangesFocusWithoutChangingFifoOrder() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
@@ -288,7 +328,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
 
         workspace.createNote(on: .left)
 
-        let draft = try XCTUnwrap(workspace.activeNotes.first)
+        let draft = try XCTUnwrap(workspace.notes.first)
         XCTAssertEqual(workspace.edge(for: draft.id), .left)
         XCTAssertTrue(workspace.presentationState.isIce(draft.id))
         XCTAssertTrue(store.notes.isEmpty, "An untouched edge draft must not reach disk")

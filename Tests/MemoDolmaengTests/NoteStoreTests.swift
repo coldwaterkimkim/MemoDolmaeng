@@ -27,9 +27,9 @@ final class NoteStoreTests: XCTestCase {
         let store = try NoteStore(persistenceURL: fixture.notesURL, now: { baseDate })
 
         XCTAssertEqual(store.notes.count, 12)
-        XCTAssertEqual(store.activeNotes().count, 10)
-        XCTAssertTrue(visibleIDs.isSubset(of: Set(store.activeNotes().map(\.id))))
-        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+        XCTAssertEqual(store.notes.count, 12)
+        XCTAssertTrue(visibleIDs.isSubset(of: Set(store.notes.map(\.id))))
+        let ordered = store.notes.sorted { $0.placement.order < $1.placement.order }
         XCTAssertTrue(visibleIDs.contains(ordered[0].id))
         XCTAssertTrue(visibleIDs.contains(ordered[1].id))
         XCTAssertTrue(visibleIDs.contains(ordered[2].id))
@@ -38,7 +38,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertFalse(store.notes.contains(where: { !MemoNote.hasMeaningfulContent($0.content) }))
 
         let envelope = try fixture.readEnvelope()
-        XCTAssertEqual(envelope.schemaVersion, 4)
+        XCTAssertEqual(envelope.schemaVersion, 5)
         XCTAssertEqual(envelope.edgeGroups.count, 1)
     }
 
@@ -59,7 +59,7 @@ final class NoteStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            store.activeNotes().sorted { $0.placement.order < $1.placement.order }.map(\.title),
+            store.notes.sorted { $0.placement.order < $1.placement.order }.map(\.title),
             ["위", "중간", "아래"]
         )
         XCTAssertEqual(store.defaultGroup.edge, .right)
@@ -107,14 +107,14 @@ final class NoteStoreTests: XCTestCase {
         )
 
         let store = try NoteStore(persistenceURL: fixture.notesURL)
-        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+        let ordered = store.notes.sorted { $0.placement.order < $1.placement.order }
 
         XCTAssertEqual(ordered.map(\.title), ["위", "아래"])
         XCTAssertEqual(store.edgeGroups.filter { $0.edge == .right }.count, 1)
         XCTAssertEqual(store.note(withID: upperNote.id)?.panelSize?.cgSize.width, 510)
-        XCTAssertEqual(try fixture.readEnvelope().schemaVersion, 4)
+        XCTAssertEqual(try fixture.readEnvelope().schemaVersion, 5)
         XCTAssertTrue(try fixture.backups().contains {
-            $0.lastPathComponent.hasPrefix("notes-pre-edge-stack-v4-")
+            $0.lastPathComponent.hasPrefix("notes-pre-edge-stack-v5-")
         })
     }
 
@@ -157,7 +157,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertTrue(try fixture.readEnvelope().notes.isEmpty)
     }
 
-    func testActiveCapacityIsEnforcedForCreateAndRestore() throws {
+    func testMoreThanTenNotesCanBeCreatedWithoutArchiveCapacity() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }
 
@@ -172,52 +172,49 @@ final class NoteStoreTests: XCTestCase {
         let first = try store.createNote(content: "첫 메모")
         XCTAssertTrue(NoteColor.memoPalette.contains(first.color))
         XCTAssertNotEqual(first.color, .black)
-        for index in 1..<NoteStore.maxActiveNotes { try store.createNote(content: "메모 \(index)") }
-
-        XCTAssertThrowsError(try store.createNote(content: "거절될 메모")) { error in
-            XCTAssertEqual(error as? NoteStoreError, .activeCapacityReached)
+        for index in 1..<25 {
+            try store.createNote(content: "메모 \(index)")
         }
-        XCTAssertTrue(store.setActive(noteID: first.id, isActive: false))
-        let replacement = try store.createNote(content: "새 활성 메모")
-        XCTAssertFalse(store.setActive(noteID: first.id, isActive: true))
-        XCTAssertTrue(store.setActive(noteID: replacement.id, isActive: false))
-        XCTAssertTrue(store.setActive(noteID: first.id, isActive: true))
-        XCTAssertEqual(store.activeNotes().count, NoteStore.maxActiveNotes)
+
+        XCTAssertEqual(store.notes.count, 25)
+        XCTAssertEqual(try NoteStore(persistenceURL: fixture.notesURL).notes.count, 25)
     }
 
-    func testCapacityRejectionDoesNotReuseAnOlderPersistenceError() throws {
+    func testV4ArchivedNotesJoinTheSingleListAndOriginalBytesAreBackedUp() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }
         let group = MemoEdgeGroup(edge: .right)
-        let active = (0..<NoteStore.maxActiveNotes).map { index in
-            MemoNote(
-                title: "활성 \(index)",
-                content: "본문 \(index)",
-                placement: MemoPlacement(groupID: group.id, order: index)
-            )
-        }
-        let archived = MemoNote(
-            title: "보관",
-            content: "보관 본문",
-            isActive: false,
-            placement: MemoPlacement(groupID: group.id, order: active.count)
+        let visible = MemoNote(
+            title: "기존 메모",
+            content: "기존 본문",
+            placement: MemoPlacement(groupID: group.id, order: 0)
         )
-        try fixture.writeEnvelope(
+        let archived = MemoNote(
+            title: "예전 보관 메모",
+            content: "보관 본문",
+            placement: MemoPlacement(groupID: group.id, order: 1)
+        )
+        let original = try fixture.writeV4Envelope(
             NoteStoreEnvelope(
-                notes: active + [archived],
+                schemaVersion: 4,
+                notes: [visible, archived],
                 edgeGroups: [group],
                 defaultGroupID: group.id
-            )
+            ),
+            archivedIDs: [archived.id]
         )
         let store = try NoteStore(persistenceURL: fixture.notesURL)
 
-        try FileManager.default.removeItem(at: fixture.notesURL)
-        try FileManager.default.createDirectory(at: fixture.notesURL, withIntermediateDirectories: false)
-        store.updateContent(noteID: active[0].id, content: "저장 실패 유도")
-        XCTAssertNotNil(store.lastPersistenceError)
-
-        XCTAssertFalse(store.setActive(noteID: archived.id, isActive: true))
-        XCTAssertNil(store.lastPersistenceError)
+        XCTAssertEqual(store.notes.map(\.id), [visible.id, archived.id])
+        XCTAssertEqual(try fixture.readEnvelope().schemaVersion, 5)
+        let backup = try XCTUnwrap(fixture.backups().first)
+        XCTAssertTrue(backup.lastPathComponent.hasPrefix("notes-pre-no-library-v5-"))
+        XCTAssertEqual(try Data(contentsOf: backup), original)
+        let savedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.notesURL)) as? [String: Any]
+        )
+        let savedNotes = try XCTUnwrap(savedObject["notes"] as? [[String: Any]])
+        XCTAssertTrue(savedNotes.allSatisfy { $0["isActive"] == nil })
     }
 
     func testUndoingToPersistedContentClearsAnOlderPersistenceError() throws {
@@ -319,7 +316,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(store.edgeGroups.filter { $0.edge == .left }.count, 1)
     }
 
-    func testGlobalIndexOrderFlattensActiveNotesWithoutChangingContent() throws {
+    func testGlobalIndexOrderFlattensAllNotesWithoutChangingContent() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }
         let store = try NoteStore(persistenceURL: fixture.notesURL)
@@ -330,7 +327,7 @@ final class NoteStoreTests: XCTestCase {
 
         XCTAssertTrue(store.setGlobalIndexOrder([third.id, first.id, second.id]))
 
-        let ordered = store.activeNotes().sorted { $0.placement.order < $1.placement.order }
+        let ordered = store.notes.sorted { $0.placement.order < $1.placement.order }
         XCTAssertEqual(ordered.map(\.id), [third.id, first.id, second.id])
         XCTAssertEqual(ordered.map(\.content), ["셋째 본문", "첫 본문", "둘째 본문"])
         XCTAssertTrue(ordered.allSatisfy { $0.placement.groupID == store.defaultGroupID })
@@ -499,6 +496,24 @@ private final class TemporaryStoreFixture {
         _ = try write(envelope)
     }
 
+    @discardableResult
+    func writeV4Envelope(_ envelope: NoteStoreEnvelope, archivedIDs: Set<UUID>) throws -> Data {
+        let encoded = try encode(envelope)
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var notes = try XCTUnwrap(root["notes"] as? [[String: Any]])
+        for index in notes.indices {
+            guard let id = notes[index]["id"] as? String,
+                  let uuid = UUID(uuidString: id)
+            else { continue }
+            notes[index]["isActive"] = !archivedIDs.contains(uuid)
+        }
+        root["notes"] = notes
+        root["schemaVersion"] = 4
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: notesURL)
+        return data
+    }
+
     func readEnvelope() throws -> NoteStoreEnvelope {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -517,11 +532,15 @@ private final class TemporaryStoreFixture {
 
     @discardableResult
     private func write<T: Encodable>(_ value: T) throws -> Data {
+        let data = try encode(value)
+        try data.write(to: notesURL)
+        return data
+    }
+
+    private func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(value)
-        try data.write(to: notesURL)
-        return data
+        return try encoder.encode(value)
     }
 }

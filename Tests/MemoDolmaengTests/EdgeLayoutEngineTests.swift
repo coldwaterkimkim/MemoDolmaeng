@@ -426,26 +426,52 @@ final class EdgeLayoutEngineTests: XCTestCase {
         }
     }
 
-    func testIceStackUsesThreeEqualNonOverlappingSlotsBelowIndexRail() {
-        let indexRail = CGRect(x: screen.minX, y: 690, width: 120, height: 130)
+    func testNewestIceKeepsClickedIndexAnchorAndOlderPanelsReflowAroundIt() {
+        let clickedIndexTop: CGFloat = 480
         let frames = (0..<3).map { slot in
             EdgeLayoutEngine.icePanelFrame(
                 edge: .left,
                 slot: slot,
-                indexGroupFrame: indexRail,
+                itemCount: 3,
+                newestAnchorY: clickedIndexTop,
                 screenFrame: screen,
                 visibleFrame: visible,
                 storedWidth: 420
             )
         }
 
-        XCTAssertEqual(frames[0].maxY, indexRail.minY - EdgeLayoutEngine.groupGap, accuracy: 0.001)
+        XCTAssertEqual(frames[0].maxY, clickedIndexTop, accuracy: 0.001)
         XCTAssertEqual(frames[0].height, frames[1].height, accuracy: 1)
         XCTAssertEqual(frames[1].height, frames[2].height, accuracy: 1)
-        XCTAssertEqual(frames[0].minY, frames[1].maxY, accuracy: 0.001)
-        XCTAssertEqual(frames[1].minY, frames[2].maxY, accuracy: 0.001)
-        XCTAssertEqual(frames[2].minY, visible.minY, accuracy: 0.001)
+        XCTAssertEqual(frames[1].maxY, frames[0].minY, accuracy: 0.001)
+        XCTAssertEqual(frames[2].minY, frames[0].maxY, accuracy: 0.001)
+        XCTAssertTrue(frames.allSatisfy {
+            $0.minY >= visible.minY - 0.001 && $0.maxY <= visible.maxY + 0.001
+        })
         XCTAssertTrue(frames.allSatisfy { $0.width == 420 && $0.minX == screen.minX })
+    }
+
+    func testNewestIceNearBottomStaysAtClickAndPushesOlderPanelsUp() {
+        let clickedIndexTop: CGFloat = 110
+        let frames = (0..<3).map { slot in
+            EdgeLayoutEngine.icePanelFrame(
+                edge: .right,
+                slot: slot,
+                itemCount: 3,
+                newestAnchorY: clickedIndexTop,
+                screenFrame: screen,
+                visibleFrame: visible,
+                storedWidth: nil
+            )
+        }
+
+        XCTAssertEqual(frames[0].maxY, clickedIndexTop, accuracy: 0.001)
+        XCTAssertEqual(frames[1].minY, frames[0].maxY, accuracy: 0.001)
+        XCTAssertEqual(frames[2].minY, frames[1].maxY, accuracy: 0.001)
+        XCTAssertTrue(frames.allSatisfy {
+            $0.minY >= visible.minY - 0.001 && $0.maxY <= visible.maxY + 0.001
+        })
+        XCTAssertTrue(frames.allSatisfy { $0.maxX == screen.maxX })
     }
 
     private func note(

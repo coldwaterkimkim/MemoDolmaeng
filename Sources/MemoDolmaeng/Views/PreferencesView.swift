@@ -19,7 +19,7 @@ struct PreferencesView: View {
         .onAppear {
             reconcileSelectedNote()
         }
-        .onChange(of: activeNoteIDs) { _, _ in
+        .onChange(of: noteIDs) { _, _ in
             reconcileSelectedNote()
         }
     }
@@ -54,11 +54,11 @@ struct PreferencesView: View {
 
     private var noteSettings: some View {
         Form {
-            if workspace.activeNotes.isEmpty {
-                ContentUnavailableView("활성 메모가 없어", systemImage: "note.text")
+            if workspace.notes.isEmpty {
+                ContentUnavailableView("메모가 없어", systemImage: "note.text")
             } else {
-                Picker("활성 메모", selection: selectedNoteBinding) {
-                    ForEach(workspace.activeNotes) { note in
+                Picker("메모", selection: selectedNoteBinding) {
+                    ForEach(workspace.notes) { note in
                         Text(note.displayTitle).tag(note.id as UUID?)
                     }
                 }
@@ -135,11 +135,11 @@ struct PreferencesView: View {
 
     private var selectedNote: MemoNote? {
         guard let selectedNoteID else { return nil }
-        return workspace.activeNotes.first(where: { $0.id == selectedNoteID })
+        return workspace.notes.first(where: { $0.id == selectedNoteID })
     }
 
-    private var activeNoteIDs: [UUID] {
-        workspace.activeNotes.map(\.id)
+    private var noteIDs: [UUID] {
+        workspace.notes.map(\.id)
     }
 
     private var displayBinding: Binding<UInt32?> {
@@ -149,18 +149,18 @@ struct PreferencesView: View {
     private var selectedNoteBinding: Binding<UUID?> {
         Binding(
             get: {
-                if let selectedNoteID, activeNoteIDs.contains(selectedNoteID) {
+                if let selectedNoteID, noteIDs.contains(selectedNoteID) {
                     return selectedNoteID
                 }
-                return activeNoteIDs.first
+                return noteIDs.first
             },
             set: { selectedNoteID = $0 }
         )
     }
 
     private func reconcileSelectedNote() {
-        if let selectedNoteID, activeNoteIDs.contains(selectedNoteID) { return }
-        selectedNoteID = activeNoteIDs.first
+        if let selectedNoteID, noteIDs.contains(selectedNoteID) { return }
+        selectedNoteID = noteIDs.first
     }
 
     private var fontSizeRow: some View {

@@ -2,12 +2,6 @@ import AppKit
 import Combine
 import Foundation
 
-enum MemoRestoreResult: Equatable {
-    case restored
-    case capacityReached
-    case failed
-}
-
 @MainActor
 final class EdgeWorkspaceController: ObservableObject {
     @Published private(set) var notes: [MemoNote]
@@ -17,7 +11,6 @@ final class EdgeWorkspaceController: ObservableObject {
     let store: NoteStore
     let preferences: EdgePreferences
 
-    var onShowLibrary: (() -> Void)?
     var onPresentationChange: ((Bool) -> Void)?
 
     private let attachmentService: AttachmentService
@@ -34,6 +27,7 @@ final class EdgeWorkspaceController: ObservableObject {
     private var pendingEmptyNoteIDs: Set<UUID> = []
     private var pendingUnsavedContent: [UUID: String] = [:]
     private var iceEdges: [UUID: EdgeDock] = [:]
+    private var iceAnchorY: [UUID: CGFloat] = [:]
     private var launcherEdge: EdgeDock = .right
     private var interactionDisplayID: UInt32?
     private var launcherAnchorY: [EdgeDock: CGFloat] = [:]
@@ -126,11 +120,6 @@ final class EdgeWorkspaceController: ObservableObject {
             open(noteID: draftNote.id, on: side, focusEditor: true)
             return
         }
-        guard activeNotes.count < NoteStore.maxActiveNotes else {
-            showCapacityAlert()
-            return
-        }
-
         let timestamp = Date()
         let placementGroupID = store.defaultGroupID
         draftNote = MemoNote(
@@ -139,7 +128,6 @@ final class EdgeWorkspaceController: ObservableObject {
             color: NoteColor.randomMemoColor(
                 excluding: store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.color
             ),
-            isActive: true,
             placement: MemoPlacement(
                 groupID: placementGroupID,
                 order: nextOrder(in: placementGroupID)
@@ -171,7 +159,7 @@ final class EdgeWorkspaceController: ObservableObject {
             closeMemo(noteID: noteID)
             return
         }
-        let candidate = preferences.lastNoteID.flatMap(note(withID:)) ?? orderedActiveNotes.first
+        let candidate = preferences.lastNoteID.flatMap(note(withID:)) ?? orderedNotes.first
         if let candidate { open(noteID: candidate.id, on: preferences.defaultEdge, focusEditor: true) }
     }
 
@@ -209,6 +197,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 self.panelControllers.removeValue(forKey: closingID)
             }
             self.iceEdges.removeValue(forKey: closingID)
+            self.iceAnchorY.removeValue(forKey: closingID)
             self.refreshHandleSelection()
             if self.pointerInsideHotZones.isEmpty,
                self.pointerInsideHandles.isEmpty,
@@ -221,13 +210,14 @@ final class EdgeWorkspaceController: ObservableObject {
         if controller == nil {
             collapsingNoteIDs.remove(closingID)
             iceEdges.removeValue(forKey: closingID)
+            iceAnchorY.removeValue(forKey: closingID)
         }
         finalizeTransientState(noteID: closingID)
         onPresentationChange?(presentationState.hasOpenPanels)
     }
 
     func cycleNote(direction: Int) {
-        let ordered = orderedActiveNotes
+        let ordered = orderedNotes
         guard !ordered.isEmpty else { return }
         let currentIndex = presentationState.currentNoteID.flatMap { id in ordered.firstIndex { $0.id == id } } ?? 0
         let next = (currentIndex + direction + ordered.count) % ordered.count
@@ -236,46 +226,10 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     func selectNote(at index: Int) {
-        let ordered = orderedActiveNotes
+        let ordered = orderedNotes
         guard ordered.indices.contains(index) else { return }
         let side = presentationState.currentNoteID.flatMap { iceEdges[$0] } ?? preferences.defaultEdge
         open(noteID: ordered[index].id, on: side, focusEditor: true)
-    }
-
-    func openFromLibrary(noteID: UUID) {
-        guard note(withID: noteID)?.isActive == true else { return }
-        open(noteID: noteID, on: preferences.defaultEdge, focusEditor: true)
-    }
-
-    func archive(noteID: UUID) {
-        if pendingEmptyNoteIDs.contains(noteID) || draftNote?.id == noteID {
-            if presentationState.isPresented(noteID) {
-                closeMemo(noteID: noteID)
-            } else {
-                finalizeTransientState(noteID: noteID)
-            }
-            return
-        }
-        if presentationState.isPresented(noteID) { closeMemo(noteID: noteID) }
-        guard store.setActive(noteID: noteID, isActive: false) else {
-            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
-            return
-        }
-        reloadNotes()
-        refreshLayout()
-    }
-
-    func restore(noteID: UUID) -> MemoRestoreResult {
-        guard store.setActive(noteID: noteID, isActive: true) else {
-            if let error = store.lastPersistenceError {
-                showPersistenceAlert(error)
-                return .failed
-            }
-            return .capacityReached
-        }
-        reloadNotes()
-        refreshLayout()
-        return .restored
     }
 
     func delete(noteID: UUID) {
@@ -340,9 +294,7 @@ final class EdgeWorkspaceController: ObservableObject {
         return iceEdges[noteID] ?? launcherEdge
     }
 
-    var activeNotes: [MemoNote] { notes.filter(\.isActive) }
-
-    private var orderedActiveNotes: [MemoNote] {
+    private var orderedNotes: [MemoNote] {
         // Keep the last visible legacy order until the user explicitly reorders the shared tray.
         let groups = store.edgeGroups.sorted {
             if $0.id == store.defaultGroupID { return true }
@@ -351,7 +303,7 @@ final class EdgeWorkspaceController: ObservableObject {
             return $0.createdAt < $1.createdAt
         }
         let groupOrder = Dictionary(uniqueKeysWithValues: groups.enumerated().map { ($0.element.id, $0.offset) })
-        return activeNotes.sorted {
+        return notes.sorted {
             let lhsGroup = groupOrder[$0.placement.groupID] ?? Int.max
             let rhsGroup = groupOrder[$1.placement.groupID] ?? Int.max
             if lhsGroup != rhsGroup { return lhsGroup < rhsGroup }
@@ -360,7 +312,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     var availableIndexNotes: [MemoNote] {
-        orderedActiveNotes.filter { !presentationState.isIce($0.id) }
+        orderedNotes.filter { !presentationState.isIce($0.id) }
     }
 
     private func open(
@@ -368,7 +320,7 @@ final class EdgeWorkspaceController: ObservableObject {
         on requestedEdge: EdgeDock? = nil,
         focusEditor: Bool = false
     ) {
-        guard let note = note(withID: noteID), note.isActive else { return }
+        guard let note = note(withID: noteID) else { return }
         if presentationState.isIce(noteID) {
             focusIce(noteID: noteID)
             return
@@ -393,6 +345,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 action: .close(evictedID)
             )
         }
+        iceAnchorY[noteID] = handleFrame.maxY
         presentationState = EdgePresentationReducer.reduce(
             state: presentationState,
             action: .open(noteID)
@@ -443,11 +396,13 @@ final class EdgeWorkspaceController: ObservableObject {
                 self.panelControllers.removeValue(forKey: noteID)
             }
             self.iceEdges.removeValue(forKey: noteID)
+            self.iceAnchorY.removeValue(forKey: noteID)
             self.refreshHandleSelection()
         })
         if controller == nil {
             collapsingNoteIDs.remove(noteID)
             iceEdges.removeValue(forKey: noteID)
+            iceAnchorY.removeValue(forKey: noteID)
         }
         finalizeTransientState(noteID: noteID)
     }
@@ -655,10 +610,12 @@ final class EdgeWorkspaceController: ObservableObject {
             .filter { iceEdges[$0] == edge }
             .reversed())
         let slot = newestFirst.firstIndex(of: note.id) ?? 0
+        let newestAnchorY = newestFirst.first.flatMap { iceAnchorY[$0] } ?? handleFrame.maxY
         return EdgeLayoutEngine.icePanelFrame(
             edge: edge,
             slot: slot,
-            indexGroupFrame: nil,
+            itemCount: newestFirst.count,
+            newestAnchorY: newestAnchorY,
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             storedWidth: note.panelSize?.cgSize.width
@@ -683,19 +640,19 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func refreshHandles() {
-        let activeIDs = Set(activeNotes.map(\.id))
-        for (id, controller) in handleControllers where !activeIDs.contains(id) {
+        let noteIDs = Set(notes.map(\.id))
+        for (id, controller) in handleControllers where !noteIDs.contains(id) {
             controller.close()
             handleControllers.removeValue(forKey: id)
             pointerInsideHandles.remove(id)
         }
-        for (id, controller) in panelControllers where !activeIDs.contains(id)
+        for (id, controller) in panelControllers where !noteIDs.contains(id)
             && !collapsingNoteIDs.contains(id) {
             controller.close()
             panelControllers.removeValue(forKey: id)
         }
 
-        for note in activeNotes {
+        for note in notes {
             guard let frame = layoutSnapshot.handleFrames[note.id] else { continue }
             let edge = launcherEdge
             if let controller = handleControllers[note.id] {
@@ -742,7 +699,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func refreshHandleSelection() {
-        for note in activeNotes where note.id != draggingNoteID {
+        for note in notes where note.id != draggingNoteID {
             guard let frame = layoutSnapshot.handleFrames[note.id] else { continue }
             handleControllers[note.id]?.update(
                 note: note,
@@ -830,7 +787,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func applyIndexVisibility() {
-        for note in activeNotes {
+        for note in notes {
             guard let controller = handleControllers[note.id] else { continue }
             let isAvailableAsIndex = !presentationState.isPresented(note.id)
                 && !collapsingNoteIDs.contains(note.id)
@@ -888,7 +845,7 @@ final class EdgeWorkspaceController: ObservableObject {
         let overDeleteTarget = deleteDropZoneController.contains(point)
         deleteDropZoneController.setHighlighted(overDeleteTarget)
         hotZoneController.setDragging(true)
-        for candidate in activeNotes where candidate.id != note.id {
+        for candidate in notes where candidate.id != note.id {
             guard let frame = layoutSnapshot.handleFrames[candidate.id] else { continue }
             handleControllers[candidate.id]?.update(
                 note: candidate,
@@ -932,7 +889,7 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
 
-        let remaining = orderedActiveNotes.filter {
+        let remaining = orderedNotes.filter {
             $0.id != noteID && !presentationState.isIce($0.id)
         }
         let insertion = EdgeLayoutEngine.launcherInsertionOrder(
@@ -944,7 +901,7 @@ final class EdgeWorkspaceController: ObservableObject {
         reorderedVisibleIDs.insert(noteID, at: min(insertion, reorderedVisibleIDs.count))
 
         var visibleIterator = reorderedVisibleIDs.makeIterator()
-        let mergedOrder = orderedActiveNotes.compactMap { note -> UUID? in
+        let mergedOrder = orderedNotes.compactMap { note -> UUID? in
             presentationState.isIce(note.id) ? note.id : visibleIterator.next()
         }
         if !store.setGlobalIndexOrder(mergedOrder), let error = store.lastPersistenceError {
@@ -1069,7 +1026,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func nextOrder(in groupID: UUID) -> Int {
-        (activeNotes.filter { $0.placement.groupID == groupID }.map(\.placement.order).max() ?? -1) + 1
+        (notes.filter { $0.placement.groupID == groupID }.map(\.placement.order).max() ?? -1) + 1
     }
 
     private func targetScreen() -> NSScreen {
@@ -1115,15 +1072,6 @@ final class EdgeWorkspaceController: ObservableObject {
             if let index = notes.firstIndex(where: { $0.id == noteID }) { notes[index].content = "" }
         }
         if let draftNote { notes.append(draftNote) }
-    }
-
-    private func showCapacityAlert() {
-        let alert = NSAlert()
-        alert.messageText = "활성 메모가 10개야"
-        alert.informativeText = "보관함에서 메모 하나를 보관한 뒤 새 메모를 만들 수 있어."
-        alert.addButton(withTitle: "보관함 보기")
-        alert.addButton(withTitle: "확인")
-        if alert.runModal() == .alertFirstButtonReturn { onShowLibrary?() }
     }
 
     private func showPersistenceAlert(_ error: Error) {

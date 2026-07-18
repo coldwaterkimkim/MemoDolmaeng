@@ -1,7 +1,7 @@
 import Foundation
 
 struct NoteStoreEnvelope: Codable, Equatable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     let schemaVersion: Int
     var notes: [MemoNote]
@@ -22,15 +22,12 @@ struct NoteStoreEnvelope: Codable, Equatable {
 }
 
 enum NoteStoreError: Error, Equatable {
-    case activeCapacityReached
     case emptyNoteCannotBePersisted
     case unsupportedSchemaVersion(Int)
 }
 
 @MainActor
 final class NoteStore {
-    static let maxActiveNotes = 10
-
     private(set) var notes: [MemoNote] = []
     private(set) var edgeGroups: [MemoEdgeGroup] = []
     private(set) var defaultGroupID = UUID()
@@ -86,10 +83,6 @@ final class NoteStore {
             ?? MemoEdgeGroup(id: defaultGroupID, edge: .right, createdAt: now())
     }
 
-    func activeNotes() -> [MemoNote] {
-        notes.filter(\.isActive)
-    }
-
     @discardableResult
     func createNote(
         id: UUID = UUID(),
@@ -104,9 +97,6 @@ final class NoteStore {
         createdAt: Date? = nil,
         updatedAt: Date? = nil
     ) throws -> MemoNote {
-        guard activeNotes().count < Self.maxActiveNotes else {
-            throw NoteStoreError.activeCapacityReached
-        }
         guard MemoNote.hasMeaningfulContent(content) else {
             throw NoteStoreError.emptyNoteCannotBePersisted
         }
@@ -123,7 +113,6 @@ final class NoteStore {
             content: content,
             color: color ?? NoteColor.randomMemoColor(excluding: notes.last?.color),
             textColorHex: textColorHex,
-            isActive: true,
             placement: resolvedPlacement,
             aspectRatio: aspectRatio,
             opacity: opacity,
@@ -139,9 +128,6 @@ final class NoteStore {
 
     @discardableResult
     func commitDraft(_ note: MemoNote, adding group: MemoEdgeGroup? = nil) throws -> MemoNote {
-        guard activeNotes().count < Self.maxActiveNotes else {
-            throw NoteStoreError.activeCapacityReached
-        }
         guard MemoNote.hasMeaningfulContent(note.content) else {
             throw NoteStoreError.emptyNoteCannotBePersisted
         }
@@ -225,36 +211,6 @@ final class NoteStore {
     }
 
     @discardableResult
-    func setActive(noteID: UUID, isActive: Bool) -> Bool {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else {
-            lastPersistenceError = nil
-            return false
-        }
-        guard notes[index].isActive != isActive else {
-            lastPersistenceError = nil
-            return true
-        }
-        if isActive && activeNotes().count >= Self.maxActiveNotes {
-            lastPersistenceError = nil
-            return false
-        }
-
-        var updatedNotes = notes
-        updatedNotes[index].isActive = isActive
-        if isActive {
-            if group(withID: updatedNotes[index].placement.groupID) == nil {
-                updatedNotes[index].placement.groupID = defaultGroupID
-            }
-            updatedNotes[index].placement.order = nextOrder(
-                in: updatedNotes[index].placement.groupID,
-                notes: updatedNotes.filter { $0.id != noteID && $0.isActive }
-            )
-        }
-        updatedNotes[index].updatedAt = now()
-        return commit(notes: updatedNotes, groups: edgeGroups, defaultGroupID: defaultGroupID)
-    }
-
-    @discardableResult
     func deleteNote(noteID: UUID) -> Bool {
         guard notes.contains(where: { $0.id == noteID }) else { return false }
         return commit(
@@ -326,10 +282,10 @@ final class NoteStore {
 
     @discardableResult
     func setGlobalIndexOrder(_ requestedIDs: [UUID]) -> Bool {
-        let activeIDs = Set(activeNotes().map(\.id))
+        let noteIDs = Set(notes.map(\.id))
         var seen: Set<UUID> = []
-        var orderedIDs = requestedIDs.filter { activeIDs.contains($0) && seen.insert($0).inserted }
-        orderedIDs.append(contentsOf: activeNotes().map(\.id).filter { seen.insert($0).inserted })
+        var orderedIDs = requestedIDs.filter { noteIDs.contains($0) && seen.insert($0).inserted }
+        orderedIDs.append(contentsOf: notes.map(\.id).filter { seen.insert($0).inserted })
 
         var groups = edgeGroups
         let preferredSide = defaultGroup.edge.interactiveSide
@@ -344,7 +300,7 @@ final class NoteStore {
 
         let orderByID = Dictionary(uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) })
         var updatedNotes = notes
-        for index in updatedNotes.indices where updatedNotes[index].isActive {
+        for index in updatedNotes.indices {
             updatedNotes[index].placement = MemoPlacement(
                 groupID: canonicalGroup.id,
                 order: orderByID[updatedNotes[index].id] ?? Int.max
@@ -397,10 +353,17 @@ final class NoteStore {
                 install(normalized)
                 if normalized != stored { try writeEnvelope(normalized) }
                 return
+            case 4:
+                let stored = try decoder.decode(NoteStoreEnvelope.self, from: data)
+                let migrated = normalizedEnvelope(stored)
+                try backupData(data, prefix: "notes-pre-no-library-v5")
+                try writeEnvelope(migrated)
+                install(migrated)
+                return
             case 3:
                 let stored = try decoder.decode(NoteStoreEnvelope.self, from: data)
                 let migrated = normalizedEnvelope(stored)
-                try backupData(data, prefix: "notes-pre-edge-stack-v4")
+                try backupData(data, prefix: "notes-pre-edge-stack-v5")
                 try writeEnvelope(migrated)
                 install(migrated)
                 return
@@ -450,7 +413,6 @@ final class NoteStore {
                 content: note.content,
                 color: note.color,
                 textColorHex: note.textColorHex,
-                isActive: note.isActive,
                 placement: MemoPlacement(groupID: group.id, order: orderMap[note.id] ?? 0),
                 aspectRatio: note.aspectRatio,
                 opacity: note.opacity,
@@ -469,10 +431,7 @@ final class NoteStore {
             if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
             return $0.id.uuidString < $1.id.uuidString
         }
-        let active = Array(prioritized.prefix(Self.maxActiveNotes))
-        let activeIDs = Set(active.map(\.id))
-        let inactive = imported.filter { !activeIDs.contains($0.id) }
-        let orderedIDs = active.map(\.id) + inactive.map(\.id)
+        let orderedIDs = prioritized.map(\.id)
         let orderMap = Dictionary(uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) })
         let group = MemoEdgeGroup(edge: .right, normalizedCenter: 0.5, createdAt: now())
 
@@ -486,7 +445,6 @@ final class NoteStore {
                 content: legacyNote.content,
                 color: legacyNote.color,
                 textColorHex: MemoNote.defaultTextColorHex(for: legacyNote.color),
-                isActive: activeIDs.contains(legacyNote.id),
                 placement: MemoPlacement(groupID: group.id, order: orderMap[legacyNote.id] ?? index),
                 aspectRatio: .closest(to: ratio),
                 opacity: legacyNote.isTranslucent ? MemoNote.translucentOpacity : 1,
@@ -521,20 +479,6 @@ final class NoteStore {
             if groupsByID[result[index].placement.groupID] == nil {
                 result[index].placement.groupID = defaultID
             }
-        }
-
-        let allowedActiveIDs = Set(
-            result
-                .filter(\.isActive)
-                .sorted {
-                    if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-                .prefix(Self.maxActiveNotes)
-                .map(\.id)
-        )
-        for index in result.indices where result[index].isActive {
-            result[index].isActive = allowedActiveIDs.contains(result[index].id)
         }
 
         var canonicalGroups: [EdgeDock: MemoEdgeGroup] = [:]
@@ -575,7 +519,6 @@ final class NoteStore {
             let ordered = indices.sorted { lhsIndex, rhsIndex in
                 let lhs = result[lhsIndex]
                 let rhs = result[rhsIndex]
-                if lhs.isActive != rhs.isActive { return lhs.isActive && !rhs.isActive }
                 let lhsGroup = groupsByID[lhs.placement.groupID] ?? canonical
                 let rhsGroup = groupsByID[rhs.placement.groupID] ?? canonical
                 if lhsGroup.id != rhsGroup.id,

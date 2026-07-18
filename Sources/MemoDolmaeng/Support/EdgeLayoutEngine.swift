@@ -63,7 +63,7 @@ enum EdgeLayoutEngine {
         visibleFrame: CGRect
     ) -> EdgeLayoutSnapshot {
         let side = edge.interactiveSide
-        let ordered = notes.filter(\.isActive)
+        let ordered = notes
         guard !ordered.isEmpty else { return .empty }
 
         let height = min(sideHandleHeight, visibleFrame.height / CGFloat(ordered.count))
@@ -184,15 +184,14 @@ enum EdgeLayoutEngine {
         screenFrame: CGRect,
         visibleFrame: CGRect
     ) -> EdgeLayoutSnapshot {
-        let activeNotes = notes.filter(\.isActive)
-        guard !activeNotes.isEmpty else { return .empty }
+        guard !notes.isEmpty else { return .empty }
 
         var handleFrames: [UUID: CGRect] = [:]
         var groupFrames: [UUID: CGRect] = [:]
         let groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
 
         for edge in EdgeDock.allCases {
-            let edgeNotes = activeNotes
+            let edgeNotes = notes
                 .filter { groupsByID[$0.placement.groupID]?.edge == edge }
                 .sorted {
                     if $0.placement.order != $1.placement.order {
@@ -242,28 +241,60 @@ enum EdgeLayoutEngine {
     static func icePanelFrame(
         edge: EdgeDock,
         slot: Int,
-        indexGroupFrame: CGRect?,
+        itemCount: Int,
+        newestAnchorY: CGFloat,
         screenFrame: CGRect,
         visibleFrame: CGRect,
         storedWidth: CGFloat?
     ) -> CGRect {
-        let safeSlot = min(maxIcePerEdge - 1, max(0, slot))
+        let safeCount = min(maxIcePerEdge, max(1, itemCount))
+        let safeSlot = min(safeCount - 1, max(0, slot))
         let requestedWidth = storedWidth ?? panelWidth
         let width = min(
             min(MemoPanelSize.maximum.width, visibleFrame.width),
             max(MemoPanelSize.minimum.width, requestedWidth)
         )
-        let stackTop: CGFloat
-        if edge == .top {
-            stackTop = visibleFrame.maxY - topHandleHeight - groupGap
-        } else if let indexGroupFrame {
-            stackTop = indexGroupFrame.minY - groupGap
-        } else {
-            stackTop = visibleFrame.maxY
+        let anchorTop = min(
+            visibleFrame.maxY,
+            max(visibleFrame.minY + titleBarHeight, newestAnchorY)
+        )
+
+        // Keep the newest ICE at the clicked index. Older ICE panels fill the
+        // space below first, then spill above when the lower edge is full.
+        // The shared height shrinks only as much as needed to keep every panel
+        // visible and non-overlapping.
+        let olderCount = safeCount - 1
+        var belowCount = 0
+        var panelHeight: CGFloat = 1
+        for candidateBelow in 0...olderCount {
+            let candidateAbove = olderCount - candidateBelow
+            let belowHeight = (anchorTop - visibleFrame.minY) / CGFloat(candidateBelow + 1)
+            let aboveHeight = candidateAbove == 0
+                ? .greatestFiniteMagnitude
+                : (visibleFrame.maxY - anchorTop) / CGFloat(candidateAbove)
+            let candidateHeight = min(visibleFrame.height / CGFloat(maxIcePerEdge), belowHeight, aboveHeight)
+            if candidateHeight > panelHeight + 0.5
+                || (abs(candidateHeight - panelHeight) <= 0.5 && candidateBelow > belowCount) {
+                panelHeight = candidateHeight
+                belowCount = candidateBelow
+            }
         }
-        let availableHeight = max(1, stackTop - visibleFrame.minY)
-        let slotTop = (stackTop - availableHeight * CGFloat(safeSlot) / CGFloat(maxIcePerEdge)).rounded()
-        let slotBottom = (stackTop - availableHeight * CGFloat(safeSlot + 1) / CGFloat(maxIcePerEdge)).rounded()
+
+        let slotTop: CGFloat
+        let slotBottom: CGFloat
+        if safeSlot == 0 {
+            slotTop = anchorTop
+            slotBottom = anchorTop - panelHeight
+        } else if safeSlot <= belowCount {
+            slotTop = anchorTop - panelHeight * CGFloat(safeSlot)
+            slotBottom = anchorTop - panelHeight * CGFloat(safeSlot + 1)
+        } else {
+            let aboveOffset = safeSlot - belowCount - 1
+            slotBottom = anchorTop + panelHeight * CGFloat(aboveOffset)
+            slotTop = slotBottom + panelHeight
+        }
+        let roundedTop = slotTop.rounded()
+        let roundedBottom = slotBottom.rounded()
         let x: CGFloat
         switch edge {
         case .left:
@@ -273,7 +304,12 @@ enum EdgeLayoutEngine {
         case .top:
             x = min(max(visibleFrame.midX - width / 2, visibleFrame.minX), visibleFrame.maxX - width)
         }
-        return CGRect(x: x, y: slotBottom, width: width, height: max(1, slotTop - slotBottom))
+        return CGRect(
+            x: x,
+            y: roundedBottom,
+            width: width,
+            height: max(1, roundedTop - roundedBottom)
+        )
     }
 
     static func panelFrame(
@@ -435,7 +471,7 @@ enum EdgeLayoutEngine {
         snapshot: EdgeLayoutSnapshot
     ) -> Int {
         let ordered = notes
-            .filter { $0.isActive && $0.placement.groupID == groupID }
+            .filter { $0.placement.groupID == groupID }
             .sorted { $0.placement.order < $1.placement.order }
         for (index, note) in ordered.enumerated() {
             guard let frame = snapshot.handleFrames[note.id] else { continue }

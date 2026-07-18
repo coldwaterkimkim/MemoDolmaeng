@@ -136,7 +136,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
     var content: String
     var color: NoteColor
     var textColorHex: String
-    var isActive: Bool
     var placement: MemoPlacement
     var aspectRatio: MemoAspectRatio
     var panelSize: MemoPanelSize?
@@ -157,7 +156,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
         content: String = "",
         color: NoteColor = .black,
         textColorHex: String? = nil,
-        isActive: Bool = true,
         placement: MemoPlacement,
         aspectRatio: MemoAspectRatio = .portrait,
         panelSize: MemoPanelSize? = nil,
@@ -175,7 +173,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
         self.content = content
         self.color = color
         self.textColorHex = textColorHex ?? Self.defaultTextColorHex(for: color)
-        self.isActive = isActive
         self.placement = MemoPlacement(groupID: placement.groupID, order: placement.order)
         self.aspectRatio = aspectRatio
         self.panelSize = panelSize
@@ -246,7 +243,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
         case content
         case color
         case textColorHex
-        case isActive
         case placement
         case aspectRatio
         case panelSize
@@ -270,7 +266,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
         color = try container.decodeIfPresent(NoteColor.self, forKey: .color) ?? .black
         textColorHex = try container.decodeIfPresent(String.self, forKey: .textColorHex)
             ?? Self.defaultTextColorHex(for: color)
-        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
         placement = try container.decode(MemoPlacement.self, forKey: .placement)
         aspectRatio = try container.decodeIfPresent(MemoAspectRatio.self, forKey: .aspectRatio) ?? .portrait
         panelSize = try container.decodeIfPresent(MemoPanelSize.self, forKey: .panelSize)
@@ -292,7 +287,6 @@ struct MemoNote: Codable, Equatable, Identifiable {
         try container.encode(content, forKey: .content)
         try container.encode(color, forKey: .color)
         try container.encode(textColorHex, forKey: .textColorHex)
-        try container.encode(isActive, forKey: .isActive)
         try container.encode(placement, forKey: .placement)
         try container.encode(aspectRatio, forKey: .aspectRatio)
         try container.encodeIfPresent(panelSize, forKey: .panelSize)

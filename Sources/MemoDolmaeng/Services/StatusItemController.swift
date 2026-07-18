@@ -4,7 +4,6 @@ import AppKit
 final class StatusItemController: NSObject {
     var onCreateNote: (() -> Void)?
     var onToggleRecent: (() -> Void)?
-    var onShowLibrary: (() -> Void)?
     var onShowSettings: (() -> Void)?
 
     private let statusItem: NSStatusItem
@@ -27,10 +26,6 @@ final class StatusItemController: NSObject {
         menu.addItem(recentItem)
         menu.addItem(.separator())
 
-        let libraryItem = NSMenuItem(title: "보관함", action: #selector(showLibrary), keyEquivalent: "l")
-        libraryItem.target = self
-        menu.addItem(libraryItem)
-
         let settingsItem = NSMenuItem(title: "설정", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -51,10 +46,6 @@ final class StatusItemController: NSObject {
 
     @objc private func toggleRecent() {
         onToggleRecent?()
-    }
-
-    @objc private func showLibrary() {
-        onShowLibrary?()
     }
 
     @objc private func showSettings() {

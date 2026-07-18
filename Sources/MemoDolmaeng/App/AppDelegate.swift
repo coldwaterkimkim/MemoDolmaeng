@@ -7,7 +7,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var workspace: EdgeWorkspaceController?
     private var statusItemController: StatusItemController?
     private var globalHotkeyController: GlobalHotkeyController?
-    private var libraryWindowController: LibraryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var createNoteObserver: NSObjectProtocol?
 
@@ -20,7 +19,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let edgePreferences = EdgePreferences.shared
             let workspace = EdgeWorkspaceController(store: store, preferences: edgePreferences)
-            let library = LibraryWindowController(workspace: workspace)
             let settings = PreferencesWindowController(
                 workspace: workspace,
                 edgePreferences: edgePreferences,
@@ -30,15 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             status.onCreateNote = { [weak workspace] in workspace?.createNote() }
             status.onToggleRecent = { [weak workspace] in workspace?.toggleRecent() }
-            status.onShowLibrary = { [weak library] in library?.show() }
             status.onShowSettings = { [weak settings] in settings?.show() }
-            workspace.onShowLibrary = { [weak library] in library?.show() }
             workspace.onPresentationChange = { [weak status] isOpen in status?.setPanelOpen(isOpen) }
 
             self.store = store
             self.workspace = workspace
             statusItemController = status
-            libraryWindowController = library
             preferencesWindowController = settings
             do {
                 globalHotkeyController = try GlobalHotkeyController { [weak workspace] in
@@ -72,7 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newNote(_ sender: Any?) { workspace?.createNote() }
     @objc private func foldMemo(_ sender: Any?) { workspace?.closeMemo() }
-    @objc private func showLibrary(_ sender: Any?) { libraryWindowController?.show() }
     @objc private func showPreferences(_ sender: Any?) { preferencesWindowController?.show() }
 
     private func makeStore() throws -> NoteStore {
@@ -129,10 +123,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fold = NSMenuItem(title: "현재 메모 접기", action: #selector(foldMemo(_:)), keyEquivalent: "w")
         fold.target = self
         fileMenu.addItem(fold)
-        fileMenu.addItem(.separator())
-        let library = NSMenuItem(title: "보관함", action: #selector(showLibrary(_:)), keyEquivalent: "l")
-        library.target = self
-        fileMenu.addItem(library)
 
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "편집")
