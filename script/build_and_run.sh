@@ -50,6 +50,15 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+# Seal the assembled bundle so local verification catches missing/tampered files.
+# This remains an ad-hoc development signature; release signing/notarization is separate.
+xattr -cr "$APP_BUNDLE"
+codesign --force --deep --sign - "$APP_BUNDLE"
+# iCloud File Provider can immediately re-add an empty FinderInfo attribute to
+# the bundle directory. It is not app content, but strict verification rejects it.
+xattr -d com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+codesign --verify --deep --strict "$APP_BUNDLE"
+
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }

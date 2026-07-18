@@ -2,9 +2,26 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum EdgeMemoPanelLayoutPolicy {
+    static let minimumExpandedBodySize = CGSize(
+        width: MemoPanelSize.minimum.width,
+        height: EdgeLayoutEngine.titleBarHeight + 1 + 36 + 1
+    )
+
+    static func showsExpandedBody(in size: CGSize) -> Bool {
+        size.width >= minimumExpandedBodySize.width
+            && size.height >= minimumExpandedBodySize.height
+    }
+
+    static func bodyRevealProgress(expansionProgress: CGFloat) -> Double {
+        Double(min(1, max(0, (expansionProgress - 0.42) / 0.58)))
+    }
+}
+
 struct UnifiedEdgeMemoSurfaceView: View {
     @ObservedObject var viewModel: NoteEditorViewModel
 
+    let isBodyMounted: Bool
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
 
@@ -14,9 +31,12 @@ struct UnifiedEdgeMemoSurfaceView: View {
                 1,
                 max(0, (proxy.size.height - EdgeLayoutEngine.sideHandleHeight) / 110)
             )
+            let showsExpandedBody = isBodyMounted
+                && EdgeMemoPanelLayoutPolicy.showsExpandedBody(in: proxy.size)
             EdgeMemoPanelView(
                 viewModel: viewModel,
                 expansionProgress: expansionProgress,
+                showsExpandedBody: showsExpandedBody,
                 assetRootURL: assetRootURL,
                 onImageUpload: onImageUpload
             )
@@ -30,6 +50,7 @@ struct EdgeMemoPanelView: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let expansionProgress: CGFloat
+    let showsExpandedBody: Bool
     let assetRootURL: URL
     let onImageUpload: (Data, String) throws -> URL
 
@@ -43,27 +64,29 @@ struct EdgeMemoPanelView: View {
         VStack(spacing: 0) {
             titleBar(textColor: textColor)
 
-            Rectangle()
-                .fill(
-                    textColor.opacity(
-                        (increaseContrast ? 0.38 : 0.18) * bodyRevealProgress
+            if showsExpandedBody {
+                Rectangle()
+                    .fill(
+                        textColor.opacity(
+                            (increaseContrast ? 0.38 : 0.18) * bodyRevealProgress
+                        )
                     )
-                )
-                .frame(height: 1)
+                    .frame(height: 1)
 
-            MarkdownEditorView(
-                markdown: Binding(
-                    get: { viewModel.content },
-                    set: viewModel.updateMarkdownContent
-                ),
-                documentID: viewModel.noteID,
-                textColor: viewModel.textColor,
-                assetRootURL: assetRootURL,
-                onImageUpload: onImageUpload
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .opacity(bodyRevealProgress)
-            .allowsHitTesting(bodyRevealProgress > 0.96)
+                MarkdownEditorView(
+                    markdown: Binding(
+                        get: { viewModel.content },
+                        set: viewModel.updateMarkdownContent
+                    ),
+                    documentID: viewModel.noteID,
+                    textColor: viewModel.textColor,
+                    assetRootURL: assetRootURL,
+                    onImageUpload: onImageUpload
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(bodyRevealProgress)
+                .allowsHitTesting(bodyRevealProgress > 0.96)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(viewModel.color.bodyColor.opacity(effectiveOpacity))
@@ -137,7 +160,7 @@ struct EdgeMemoPanelView: View {
     }
 
     private var bodyRevealProgress: Double {
-        Double(min(1, max(0, (expansionProgress - 0.16) / 0.84)))
+        EdgeMemoPanelLayoutPolicy.bodyRevealProgress(expansionProgress: expansionProgress)
     }
 
 }

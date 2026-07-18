@@ -2,6 +2,26 @@ import XCTest
 @testable import MemoDolmaeng
 
 final class EdgeMotionPolicyTests: XCTestCase {
+    func testCollapsedMemoSurfaceDoesNotLayOutExpandedEditor() {
+        XCTAssertFalse(
+            EdgeMemoPanelLayoutPolicy.showsExpandedBody(
+                in: CGSize(width: 100, height: EdgeLayoutEngine.sideHandleHeight)
+            )
+        )
+        XCTAssertFalse(
+            EdgeMemoPanelLayoutPolicy.showsExpandedBody(
+                in: CGSize(width: MemoPanelSize.minimum.width, height: 75)
+            )
+        )
+        XCTAssertTrue(
+            EdgeMemoPanelLayoutPolicy.showsExpandedBody(
+                in: EdgeMemoPanelLayoutPolicy.minimumExpandedBodySize
+            )
+        )
+        XCTAssertEqual(EdgeMemoPanelLayoutPolicy.bodyRevealProgress(expansionProgress: 0.42), 0)
+        XCTAssertEqual(EdgeMemoPanelLayoutPolicy.bodyRevealProgress(expansionProgress: 1), 1)
+    }
+
     func testReduceMotionRemovesGeometryAndCapsFeedbackFade() {
         let policy = EdgeMotionPolicy(
             reduceMotion: true,

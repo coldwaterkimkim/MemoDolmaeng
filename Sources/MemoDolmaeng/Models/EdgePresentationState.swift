@@ -31,14 +31,16 @@ enum EdgeIndexVisibilityState: Equatable {
 
 struct EdgePresentationState: Equatable {
     var iceNoteIDs: [UUID]
+    var focusedIceNoteID: UUID?
 
-    init(iceNoteIDs: [UUID] = []) {
+    init(iceNoteIDs: [UUID] = [], focusedIceNoteID: UUID? = nil) {
         self.iceNoteIDs = iceNoteIDs.reduce(into: []) { result, noteID in
             if !result.contains(noteID) { result.append(noteID) }
         }
+        self.focusedIceNoteID = focusedIceNoteID.flatMap { self.iceNoteIDs.contains($0) ? $0 : nil }
+            ?? self.iceNoteIDs.last
     }
 
-    var focusedIceNoteID: UUID? { iceNoteIDs.last }
     var currentNoteID: UUID? { focusedIceNoteID }
     var hasOpenPanels: Bool { !iceNoteIDs.isEmpty }
 
@@ -68,19 +70,27 @@ enum EdgePresentationReducer {
         case let .click(noteID):
             if let index = next.iceNoteIDs.firstIndex(of: noteID) {
                 next.iceNoteIDs.remove(at: index)
+                if next.focusedIceNoteID == noteID {
+                    next.focusedIceNoteID = next.iceNoteIDs.last
+                }
             } else {
                 next.iceNoteIDs.append(noteID)
+                next.focusedIceNoteID = noteID
             }
         case let .open(noteID):
             next.iceNoteIDs.removeAll { $0 == noteID }
             next.iceNoteIDs.append(noteID)
+            next.focusedIceNoteID = noteID
         case let .close(noteID):
             next.iceNoteIDs.removeAll { $0 == noteID }
+            if next.focusedIceNoteID == noteID {
+                next.focusedIceNoteID = next.iceNoteIDs.last
+            }
         case let .focus(noteID):
             guard next.isIce(noteID) else { return next }
-            next.iceNoteIDs.removeAll { $0 == noteID }
-            next.iceNoteIDs.append(noteID)
+            next.focusedIceNoteID = noteID
         }
+        if next.iceNoteIDs.isEmpty { next.focusedIceNoteID = nil }
         return next
     }
 }

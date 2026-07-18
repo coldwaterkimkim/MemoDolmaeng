@@ -11,6 +11,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private var currentBodyFrame: CGRect = .zero
     private var currentHandleFrame: CGRect = .zero
     private var shouldBeVisible = false
+    private var isBodyMounted = false
     private var visibilityGeneration = 0
     private var isUserResizing = false
     private var suppressResizePersistence = false
@@ -22,6 +23,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     var onCycle: ((Int) -> Void)?
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
+    var onDidBecomeKey: ((UUID) -> Void)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -39,8 +41,13 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
-        panel.minSize = MemoPanelSize.minimum
-        panel.maxSize = MemoPanelSize.maximum
+        // The panel is born at its edge handle size. Expanded editor constraints
+        // are installed only after the reveal reaches a valid body frame.
+        panel.minSize = CGSize(width: 1, height: 1)
+        panel.maxSize = CGSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.title = "메모돌맹 메모"
 
@@ -85,8 +92,10 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         currentHandleFrame = handleFrame
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
+        let wasIntendedVisible = shouldBeVisible
         let isSwitchingNotes = wasVisible && previousNoteID != nil && previousNoteID != note.id
         if isSwitchingNotes { prepareContentSwitchTransition() }
+        isBodyMounted = wasVisible && wasIntendedVisible
 
         if previousNoteID != note.id {
             viewModel = NoteEditorViewModel(
@@ -97,7 +106,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         } else {
             viewModel?.sync(note: note)
         }
-        updateRootView()
         window?.identifier = NSUserInterfaceItemIdentifier("memo-panel-\(note.id.uuidString)")
 
         if let panel = window as? EdgeMemoPanel {
@@ -113,6 +121,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         window.alphaValue = 1
 
         if wasVisible {
+            updateRootView()
             window.hasShadow = true
             configureWindowSizeConstraints()
             if window.frame != currentBodyFrame {
@@ -131,7 +140,15 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                     window.setFrame(currentBodyFrame, display: true)
                 }
             }
-            if shouldFocusEditor {
+            if !isBodyMounted {
+                mountBody(
+                    after: motion.animatesGeometry
+                        ? motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
+                        : 0,
+                    generation: generation,
+                    focusEditor: shouldFocusEditor
+                )
+            } else if shouldFocusEditor {
                 let delay = isSwitchingNotes
                     ? motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
                     : (motion.reduceMotion ? 0 : 0.12)
@@ -148,6 +165,11 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         suppressResizePersistence(for: revealDuration)
         allowTransitionSizing()
         window.setFrame(motion.animatesGeometry ? currentHandleFrame : currentBodyFrame, display: false)
+        updateRootView()
+        if !motion.animatesGeometry {
+            isBodyMounted = true
+            updateRootView()
+        }
         window.alphaValue = motion.reduceMotion ? 0 : 1
         window.hasShadow = false
         window.orderFrontRegardless()
@@ -169,8 +191,12 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                 window.alphaValue = 1
                 self.configureWindowSizeConstraints()
                 window.hasShadow = true
+                if !self.isBodyMounted {
+                    self.isBodyMounted = true
+                    self.updateRootView()
+                }
                 if shouldFocusEditor {
-                    self.focusEditor()
+                    self.focusEditor(after: 0.01)
                 } else {
                     self.clearAutomaticFieldFocus()
                 }
@@ -210,6 +236,8 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
 
         window.hasShadow = false
+        isBodyMounted = false
+        updateRootView()
         let hideDuration = motion.animatesGeometry
             ? motion.geometryDuration(EdgeLayoutEngine.panelHideDuration)
             : motion.fadeDuration(EdgeLayoutEngine.panelHideDuration)
@@ -276,6 +304,14 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         )
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === window,
+              shouldBeVisible,
+              let noteID
+        else { return }
+        onDidBecomeKey?(noteID)
+    }
+
     private func prepareContentSwitchTransition() {
         guard let contentView = window?.contentView else { return }
         let motion = EdgeMotionPolicy.current
@@ -287,11 +323,30 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
     }
 
-    private func focusEditor(after delay: TimeInterval) {
+    private func focusEditor(after delay: TimeInterval, remainingAttempts: Int = 8) {
         Task { @MainActor [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard let self, self.shouldBeVisible else { return }
-            self.focusEditor()
+            if !self.focusEditor(), remainingAttempts > 1 {
+                self.focusEditor(after: 0.02, remainingAttempts: remainingAttempts - 1)
+            }
+        }
+    }
+
+    private func mountBody(after delay: TimeInterval, generation: Int, focusEditor: Bool) {
+        Task { @MainActor [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            guard let self,
+                  self.shouldBeVisible,
+                  self.visibilityGeneration == generation
+            else { return }
+            self.isBodyMounted = true
+            self.updateRootView()
+            if focusEditor {
+                self.focusEditor(after: 0.01)
+            } else {
+                self.clearAutomaticFieldFocus()
+            }
         }
     }
 
@@ -331,6 +386,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         guard let viewModel else { return }
         let rootView = UnifiedEdgeMemoSurfaceView(
             viewModel: viewModel,
+            isBodyMounted: isBodyMounted,
             assetRootURL: assetRootURL,
             onImageUpload: { [weak self] data, originalName in
                 guard let self,
@@ -345,22 +401,29 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
 
         if let hostingController {
             hostingController.rootView = rootView
+            if window?.contentView !== hostingController.view {
+                window?.contentViewController = nil
+                window?.contentView = hostingController.view
+            }
         } else {
             let controller = NSHostingController(rootView: rootView)
             controller.view.wantsLayer = true
             hostingController = controller
-            window?.contentViewController = controller
+            window?.contentViewController = nil
+            window?.contentView = controller.view
         }
     }
 
-    private func focusEditor() {
+    @discardableResult
+    private func focusEditor() -> Bool {
         guard let contentView = window?.contentView,
               let textView = findTextView(in: contentView)
         else {
-            return
+            return false
         }
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(textView)
+        return true
     }
 
     private func clearAutomaticFieldFocus() {

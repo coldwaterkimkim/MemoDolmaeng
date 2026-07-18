@@ -65,8 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard workspace?.prepareForTermination() != false else { return .terminateCancel }
         if let createNoteObserver { NotificationCenter.default.removeObserver(createNoteObserver) }
-        workspace?.prepareForTermination()
         return .terminateNow
     }
 

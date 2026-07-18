@@ -32,8 +32,10 @@ final class EdgeWorkspaceController: ObservableObject {
     private var pointerInsideHotZones: Set<EdgeDock> = []
     private var pointerInsideControls: Set<EdgeDock> = []
     private var pendingEmptyNoteIDs: Set<UUID> = []
+    private var pendingUnsavedContent: [UUID: String] = [:]
     private var iceEdges: [UUID: EdgeDock] = [:]
     private var launcherEdge: EdgeDock = .right
+    private var interactionDisplayID: UInt32?
     private var launcherAnchorY: [EdgeDock: CGFloat] = [:]
     private var draftNote: MemoNote?
     private var draggingNoteID: UUID?
@@ -51,8 +53,8 @@ final class EdgeWorkspaceController: ObservableObject {
         attachmentService = AttachmentService(storageDirectory: storageDirectory)
         assetRootURL = storageDirectory.appendingPathComponent("attachments", isDirectory: true)
         attachmentService.reconcileStagedDeletions(existingNoteIDs: Set(store.notes.map(\.id)))
-        hotZoneController.onPointerChange = { [weak self] edge, inside in
-            self?.handleHotZonePointer(edge: edge, inside: inside)
+        hotZoneController.onPointerChange = { [weak self] edge, displayID, inside in
+            self?.handleHotZonePointer(edge: edge, displayID: displayID, inside: inside)
         }
         launcherEdge = preferences.defaultEdge.interactiveSide
         for edge in EdgeDock.interactiveCases {
@@ -102,10 +104,16 @@ final class EdgeWorkspaceController: ObservableObject {
         refreshLayout()
     }
 
-    func prepareForTermination() {
-        let presentedIDs = Set(presentationState.iceNoteIDs).union(pendingEmptyNoteIDs)
+    func prepareForTermination() -> Bool {
+        let presentedIDs = Set(presentationState.iceNoteIDs)
+            .union(pendingEmptyNoteIDs)
+            .union(pendingUnsavedContent.keys)
+        for noteID in presentedIDs where !prepareContentForClosure(noteID: noteID) {
+            return false
+        }
         for noteID in presentedIDs { finalizeTransientState(noteID: noteID) }
         store.save()
+        return true
     }
 
     func createNote() {
@@ -177,6 +185,7 @@ final class EdgeWorkspaceController: ObservableObject {
         guard let closingID = requestedNoteID
             ?? presentationState.focusedIceNoteID
         else { return }
+        guard prepareContentForClosure(noteID: closingID) else { return }
         let closingEdge = iceEdges[closingID] ?? preferences.defaultEdge.interactiveSide
         launcherEdge = closingEdge
         collapsingNoteIDs.insert(closingID)
@@ -377,6 +386,7 @@ final class EdgeWorkspaceController: ObservableObject {
         let screen = targetScreen()
 
         if let evictedID {
+            guard prepareContentForClosure(noteID: evictedID) else { return }
             collapsingNoteIDs.insert(evictedID)
             presentationState = EdgePresentationReducer.reduce(
                 state: presentationState,
@@ -466,6 +476,9 @@ final class EdgeWorkspaceController: ObservableObject {
         controller.onResize = { [weak self] requestedNoteID, size in
             self?.handlePanelResize(noteID: requestedNoteID, size: size)
         }
+        controller.onDidBecomeKey = { [weak self] requestedNoteID in
+            self?.handlePanelFocus(noteID: requestedNoteID)
+        }
         panelControllers[noteID] = controller
         return controller
     }
@@ -488,8 +501,17 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func focusIce(noteID: UUID) {
         guard presentationState.isIce(noteID) else { return }
-        preferences.lastNoteID = noteID
+        handlePanelFocus(noteID: noteID)
         panelControllers[noteID]?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func handlePanelFocus(noteID: UUID) {
+        guard presentationState.isIce(noteID) else { return }
+        presentationState = EdgePresentationReducer.reduce(
+            state: presentationState,
+            action: .focus(noteID)
+        )
+        preferences.lastNoteID = noteID
     }
 
     private func handleContentChange(noteID: UUID, content: String) {
@@ -516,9 +538,17 @@ final class EdgeWorkspaceController: ObservableObject {
         if MemoNote.hasMeaningfulContent(content) {
             pendingEmptyNoteIDs.remove(noteID)
             store.updateContent(noteID: noteID, content: content)
-            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
+            if let error = store.lastPersistenceError {
+                let wasAlreadyPending = pendingUnsavedContent[noteID] != nil
+                pendingUnsavedContent[noteID] = content
+                reloadNotes()
+                if !wasAlreadyPending { showPersistenceAlert(error) }
+                return
+            }
+            pendingUnsavedContent.removeValue(forKey: noteID)
             reloadNotes()
         } else {
+            pendingUnsavedContent.removeValue(forKey: noteID)
             pendingEmptyNoteIDs.insert(noteID)
             reloadNotes()
             if let index = notes.firstIndex(where: { $0.id == noteID }) {
@@ -574,7 +604,7 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func refreshLayout(excludingPanelID: UUID? = nil) {
         let screen = targetScreen()
-        hotZoneController.update(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
+        hotZoneController.update(screens: hotZoneScreens())
         refreshLayoutSnapshot()
         refreshHandles()
 
@@ -725,9 +755,10 @@ final class EdgeWorkspaceController: ObservableObject {
         applyIndexVisibility()
     }
 
-    private func handleHotZonePointer(edge: EdgeDock, inside: Bool) {
+    private func handleHotZonePointer(edge: EdgeDock, displayID: UInt32?, inside: Bool) {
         if inside {
             let side = edge.interactiveSide
+            interactionDisplayID = displayID
             pointerInsideHotZones.insert(side)
             launcherAnchorY[side] = NSEvent.mouseLocation.y
             hideTask?.cancel()
@@ -992,6 +1023,31 @@ final class EdgeWorkspaceController: ObservableObject {
         }
     }
 
+    private func prepareContentForClosure(noteID: UUID) -> Bool {
+        if let draft = draftNote, draft.id == noteID,
+           MemoNote.hasMeaningfulContent(draft.content) || !draft.attachments.isEmpty {
+            do {
+                _ = try store.commitDraft(draft)
+                draftNote = nil
+                reloadNotes()
+            } catch {
+                showPersistenceAlert(error)
+                return false
+            }
+        }
+
+        if let pendingContent = pendingUnsavedContent[noteID] {
+            store.updateContent(noteID: noteID, content: pendingContent)
+            if let error = store.lastPersistenceError {
+                showPersistenceAlert(error)
+                return false
+            }
+            pendingUnsavedContent.removeValue(forKey: noteID)
+            reloadNotes()
+        }
+        return true
+    }
+
     private func permanentDelete(noteID: UUID) {
         let staged: StagedAttachmentDeletion?
         do {
@@ -1023,14 +1079,38 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         let index = EdgeScreenSelector.selectedIndex(
             candidates: candidates,
-            preferredDisplayID: preferences.targetDisplayID,
+            preferredDisplayID: preferences.targetDisplayID ?? interactionDisplayID,
             pointer: NSEvent.mouseLocation
         ) ?? 0
         return screens[index]
     }
 
+    private func hotZoneScreens() -> [EdgeHotZoneScreen] {
+        let screens = NSScreen.screens
+        let eligible: [NSScreen]
+        if let fixedDisplayID = preferences.targetDisplayID,
+           let fixedScreen = screens.first(where: { $0.memoDisplayID == fixedDisplayID }) {
+            eligible = [fixedScreen]
+        } else {
+            eligible = screens
+        }
+        return eligible.enumerated().map { index, screen in
+            EdgeHotZoneScreen(
+                identifier: screen.memoDisplayID.map(String.init) ?? "fallback-\(index)",
+                displayID: screen.memoDisplayID,
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame
+            )
+        }
+    }
+
     private func reloadNotes() {
         notes = store.notes
+        for (noteID, content) in pendingUnsavedContent {
+            if let index = notes.firstIndex(where: { $0.id == noteID }) {
+                notes[index].content = content
+            }
+        }
         for noteID in pendingEmptyNoteIDs {
             if let index = notes.firstIndex(where: { $0.id == noteID }) { notes[index].content = "" }
         }

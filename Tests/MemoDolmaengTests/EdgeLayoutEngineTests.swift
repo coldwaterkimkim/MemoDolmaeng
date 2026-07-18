@@ -495,6 +495,27 @@ final class EdgeScreenSelectorTests: XCTestCase {
             0
         )
     }
+
+    @MainActor
+    func testRemovingAHotZoneScreenClearsItsPointerEdges() {
+        let controller = EdgeHotZoneController()
+        let screen = EdgeHotZoneScreen(
+            identifier: "detached-display",
+            displayID: 42,
+            screenFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1_440, height: 860)
+        )
+        var exitEvents: [(EdgeDock, UInt32?)] = []
+        controller.onPointerChange = { edge, displayID, inside in
+            if !inside { exitEvents.append((edge, displayID)) }
+        }
+
+        controller.update(screens: [screen])
+        controller.update(screens: [])
+
+        XCTAssertEqual(Set(exitEvents.map(\.0)), Set(EdgeDock.interactiveCases))
+        XCTAssertTrue(exitEvents.allSatisfy { $0.1 == 42 })
+    }
 }
 
 final class EdgePresentationReducerTests: XCTestCase {
@@ -532,10 +553,12 @@ final class EdgePresentationReducerTests: XCTestCase {
         let state = EdgePresentationState(iceNoteIDs: [first, second, third])
 
         let focused = EdgePresentationReducer.reduce(state: state, action: .focus(first))
-        XCTAssertEqual(focused.iceNoteIDs, [second, third, first])
+        XCTAssertEqual(focused.iceNoteIDs, [first, second, third])
+        XCTAssertEqual(focused.focusedIceNoteID, first)
 
         let closed = EdgePresentationReducer.reduce(state: focused, action: .close(third))
-        XCTAssertEqual(closed.iceNoteIDs, [second, first])
+        XCTAssertEqual(closed.iceNoteIDs, [first, second])
+        XCTAssertEqual(closed.focusedIceNoteID, first)
     }
 }
 
@@ -633,5 +656,44 @@ final class MemoAssetSchemeHandlerTests: XCTestCase {
         XCTAssertThrowsError(
             try service.importImage(data: Data("not an image".utf8), originalName: "fake.png", noteID: noteID)
         )
+    }
+
+    @MainActor
+    func testNativeImageImportHonorsTheTwentyMegabyteBoundary() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengImageBoundary-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: storage) }
+        let service = AttachmentService(storageDirectory: storage)
+        let noteID = UUID()
+        let baseImage = try XCTUnwrap(
+            Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        )
+
+        var exactLimitImage = baseImage
+        exactLimitImage.append(
+            Data(count: AttachmentService.maximumImportedImageBytes - baseImage.count)
+        )
+        let imported = try service.importImage(
+            data: exactLimitImage,
+            originalName: "exact-limit.png",
+            noteID: noteID
+        )
+        let importedSize = try FileManager.default.attributesOfItem(
+            atPath: service.rootURL
+                .appendingPathComponent(noteID.uuidString)
+                .appendingPathComponent(imported.fileName).path
+        )[.size] as? NSNumber
+        XCTAssertEqual(importedSize?.intValue, AttachmentService.maximumImportedImageBytes)
+
+        exactLimitImage.append(0)
+        XCTAssertThrowsError(
+            try service.importImage(
+                data: exactLimitImage,
+                originalName: "over-limit.png",
+                noteID: noteID
+            )
+        ) { error in
+            XCTAssertEqual((error as NSError).code, CocoaError.fileReadTooLarge.rawValue)
+        }
     }
 }

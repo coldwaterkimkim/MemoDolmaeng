@@ -226,9 +226,18 @@ final class NoteStore {
 
     @discardableResult
     func setActive(noteID: UUID, isActive: Bool) -> Bool {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return false }
-        guard notes[index].isActive != isActive else { return true }
-        if isActive && activeNotes().count >= Self.maxActiveNotes { return false }
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else {
+            lastPersistenceError = nil
+            return false
+        }
+        guard notes[index].isActive != isActive else {
+            lastPersistenceError = nil
+            return true
+        }
+        if isActive && activeNotes().count >= Self.maxActiveNotes {
+            lastPersistenceError = nil
+            return false
+        }
 
         var updatedNotes = notes
         updatedNotes[index].isActive = isActive
@@ -613,6 +622,7 @@ final class NoteStore {
     }
 
     private func mutate(noteID: UUID, mutation: (inout MemoNote) -> Bool) {
+        lastPersistenceError = nil
         guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
         var updatedNotes = notes
         guard mutation(&updatedNotes[index]) else { return }

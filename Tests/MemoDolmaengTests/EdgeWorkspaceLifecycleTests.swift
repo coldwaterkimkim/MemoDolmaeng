@@ -87,6 +87,41 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
     }
 
+    func testClickingEarlierIceChangesFocusWithoutChangingFifoOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let first = try store.createNote(title: "첫 메모", content: "첫 본문")
+        let second = try store.createNote(title: "둘째 메모", content: "둘째 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: first.id)
+        workspace.handleClick(noteID: second.id)
+        try await Task.sleep(for: .milliseconds(280))
+
+        let firstPanel = try XCTUnwrap(
+            NSApp.windows.first {
+                $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(first.id.uuidString)")
+            }
+        )
+        firstPanel.delegate?.windowDidBecomeKey?(
+            Notification(name: NSWindow.didBecomeKeyNotification, object: firstPanel)
+        )
+        try await Task.sleep(for: .milliseconds(40))
+
+        XCTAssertEqual(workspace.presentationState.iceNoteIDs, [first.id, second.id])
+        XCTAssertEqual(workspace.presentationState.focusedIceNoteID, first.id)
+
+        workspace.toggleRecent()
+        XCTAssertEqual(workspace.presentationState.iceNoteIDs, [second.id])
+        XCTAssertEqual(workspace.presentationState.focusedIceNoteID, second.id)
+        workspace.closeMemo(noteID: second.id)
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
     func testIceOpenedOnEitherSideLeavesTheSharedIndexList() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)

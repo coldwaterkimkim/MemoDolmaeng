@@ -185,6 +185,56 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertEqual(store.activeNotes().count, NoteStore.maxActiveNotes)
     }
 
+    func testCapacityRejectionDoesNotReuseAnOlderPersistenceError() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+        let group = MemoEdgeGroup(edge: .right)
+        let active = (0..<NoteStore.maxActiveNotes).map { index in
+            MemoNote(
+                title: "활성 \(index)",
+                content: "본문 \(index)",
+                placement: MemoPlacement(groupID: group.id, order: index)
+            )
+        }
+        let archived = MemoNote(
+            title: "보관",
+            content: "보관 본문",
+            isActive: false,
+            placement: MemoPlacement(groupID: group.id, order: active.count)
+        )
+        try fixture.writeEnvelope(
+            NoteStoreEnvelope(
+                notes: active + [archived],
+                edgeGroups: [group],
+                defaultGroupID: group.id
+            )
+        )
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+
+        try FileManager.default.removeItem(at: fixture.notesURL)
+        try FileManager.default.createDirectory(at: fixture.notesURL, withIntermediateDirectories: false)
+        store.updateContent(noteID: active[0].id, content: "저장 실패 유도")
+        XCTAssertNotNil(store.lastPersistenceError)
+
+        XCTAssertFalse(store.setActive(noteID: archived.id, isActive: true))
+        XCTAssertNil(store.lastPersistenceError)
+    }
+
+    func testUndoingToPersistedContentClearsAnOlderPersistenceError() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let note = try store.createNote(content: "원래 본문")
+
+        try FileManager.default.removeItem(at: fixture.notesURL)
+        try FileManager.default.createDirectory(at: fixture.notesURL, withIntermediateDirectories: false)
+        store.updateContent(noteID: note.id, content: "저장 실패 본문")
+        XCTAssertNotNil(store.lastPersistenceError)
+
+        store.updateContent(noteID: note.id, content: note.content)
+        XCTAssertNil(store.lastPersistenceError)
+    }
+
     func testReloadPreservesV3FieldsAndRemovesLegacyPosition() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }
