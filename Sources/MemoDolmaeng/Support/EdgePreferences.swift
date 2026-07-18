@@ -3,7 +3,6 @@ import Combine
 
 final class EdgePreferences: ObservableObject {
     static let shared = EdgePreferences()
-    private static let hideDelayMigrationVersion = 2
 
     @Published var defaultEdge: EdgeDock {
         didSet { defaults.set(defaultEdge.rawValue, forKey: Key.defaultEdge); notifyChanged() }
@@ -26,14 +25,6 @@ final class EdgePreferences: ObservableObject {
 
     @Published var defaultOpacity: Double {
         didSet { defaults.set(defaultOpacity, forKey: Key.defaultOpacity); notifyChanged() }
-    }
-
-    @Published var revealDelay: Double {
-        didSet { defaults.set(revealDelay, forKey: Key.revealDelay); notifyChanged() }
-    }
-
-    @Published var hideDelay: Double {
-        didSet { defaults.set(hideDelay, forKey: Key.hideDelay); notifyChanged() }
     }
 
     var lastNoteID: UUID? {
@@ -59,18 +50,6 @@ final class EdgePreferences: ObservableObject {
         defaultOpacity = defaults.object(forKey: Key.defaultOpacity) == nil
             ? 1
             : max(0.4, min(1, defaults.double(forKey: Key.defaultOpacity)))
-        revealDelay = defaults.object(forKey: Key.revealDelay) == nil
-            ? 0.18
-            : max(0, min(1, defaults.double(forKey: Key.revealDelay)))
-        if defaults.integer(forKey: Key.hideDelayMigrationVersion) < Self.hideDelayMigrationVersion {
-            hideDelay = 2
-            defaults.set(hideDelay, forKey: Key.hideDelay)
-            defaults.set(Self.hideDelayMigrationVersion, forKey: Key.hideDelayMigrationVersion)
-        } else {
-            hideDelay = defaults.object(forKey: Key.hideDelay) == nil
-                ? 2
-                : max(0.05, min(10, defaults.double(forKey: Key.hideDelay)))
-        }
     }
 
     private func notifyChanged() {
@@ -83,9 +62,6 @@ final class EdgePreferences: ObservableObject {
         static let targetDisplayID = "edge.targetDisplayID"
         static let defaultAspect = "edge.defaultAspect"
         static let defaultOpacity = "edge.defaultOpacity"
-        static let revealDelay = "edge.revealDelay"
-        static let hideDelay = "edge.hideDelay"
-        static let hideDelayMigrationVersion = "edge.hideDelayMigrationVersion"
         static let lastNoteID = "edge.lastNoteID"
     }
 }

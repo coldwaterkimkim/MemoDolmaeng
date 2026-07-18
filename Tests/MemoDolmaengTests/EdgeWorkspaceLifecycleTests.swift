@@ -338,4 +338,179 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         XCTAssertTrue(workspace.notes.isEmpty)
         XCTAssertTrue(store.notes.isEmpty)
     }
+
+    func testAdjacentButtonsCreateIndependentDraftsInOneHorizontalLane() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let source = try store.createNote(title: "기준 메모", content: "기준 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: source.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+
+        workspace.createAdjacentMemo(to: source.id, direction: .right)
+        let rightDraft = try XCTUnwrap(workspace.notes.first { $0.id != source.id })
+        XCTAssertEqual(rightDraft.color, source.color, "A child memo must inherit its mother memo color")
+        workspace.createAdjacentMemo(to: source.id, direction: .left)
+        let leftDraft = try XCTUnwrap(
+            workspace.notes.first { $0.id != source.id && $0.id != rightDraft.id }
+        )
+        XCTAssertEqual(leftDraft.color, source.color, "Every child in the chain must share the mother color")
+        try await Task.sleep(for: .milliseconds(320))
+
+        let sourcePanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(source.id.uuidString)")
+        })
+        let leftPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(leftDraft.id.uuidString)")
+        })
+        let rightPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(rightDraft.id.uuidString)")
+        })
+
+        XCTAssertLessThan(leftPanel.frame.maxX, sourcePanel.frame.minX)
+        XCTAssertLessThan(sourcePanel.frame.maxX, rightPanel.frame.minX)
+        XCTAssertEqual(leftPanel.frame.minY, sourcePanel.frame.minY, accuracy: 1)
+        XCTAssertEqual(rightPanel.frame.minY, sourcePanel.frame.minY, accuracy: 1)
+        XCTAssertEqual(leftPanel.frame.height, sourcePanel.frame.height, accuracy: 1)
+        XCTAssertEqual(rightPanel.frame.height, sourcePanel.frame.height, accuracy: 1)
+        XCTAssertEqual(Set(workspace.presentationState.iceNoteIDs), Set([source.id, leftDraft.id, rightDraft.id]))
+        XCTAssertEqual(store.notes.map(\.id), [source.id], "Blank adjacent drafts must stay off disk")
+
+        workspace.closeMemo(noteID: source.id)
+        XCTAssertFalse(workspace.presentationState.isIce(source.id))
+        XCTAssertTrue(workspace.presentationState.isIce(leftDraft.id))
+        XCTAssertTrue(workspace.presentationState.isIce(rightDraft.id))
+
+        workspace.closeMemo(noteID: leftDraft.id)
+        workspace.closeMemo(noteID: rightDraft.id)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(workspace.notes.map(\.id), [source.id])
+        XCTAssertEqual(store.notes.map(\.id), [source.id])
+    }
+
+    func testTrayCreateDoesNotReuseAnOpenAdjacentDraft() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let source = try store.createNote(title: "기준 메모", content: "기준 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: source.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.createAdjacentMemo(to: source.id, direction: .right)
+        let adjacentDraft = try XCTUnwrap(workspace.notes.first { $0.id != source.id })
+        let IDsBeforeCreate = Set(workspace.notes.map(\.id))
+
+        workspace.createNote(on: .right)
+
+        let createdID = try XCTUnwrap(Set(workspace.notes.map(\.id)).subtracting(IDsBeforeCreate).first)
+        XCTAssertNotEqual(createdID, adjacentDraft.id)
+        XCTAssertEqual(workspace.edge(for: createdID), .right)
+        XCTAssertTrue(workspace.presentationState.isIce(createdID))
+        XCTAssertTrue(workspace.presentationState.isIce(adjacentDraft.id))
+
+        for noteID in workspace.presentationState.iceNoteIDs {
+            workspace.closeMemo(noteID: noteID)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testAdjacentRevealBuffersTheFirstImmediateInput() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let source = try store.createNote(title: "기준 메모", content: "기준 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: source.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+
+        workspace.createAdjacentMemo(to: source.id, direction: .right)
+        let child = try XCTUnwrap(workspace.notes.first { $0.id != source.id })
+        let childPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(child.id.uuidString)")
+        })
+        let immediateInput = try XCTUnwrap(childPanel.firstResponder as? NSTextView)
+        immediateInput.insertText(
+            "즉시 입력",
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        XCTAssertTrue(workspace.prepareForTermination())
+
+        try await Task.sleep(for: .milliseconds(320))
+
+        XCTAssertEqual(store.note(withID: child.id)?.content, "즉시 입력")
+        XCTAssertEqual(store.note(withID: source.id)?.content, "기준 본문")
+        workspace.closeMemo(noteID: child.id)
+        workspace.closeMemo(noteID: source.id)
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testRevealBufferPreservesImmediateEditingOfExistingContent() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let note = try store.createNote(title: "기존 메모", content: "AB")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: note.id, on: .right)
+        let panel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(note.id.uuidString)")
+        })
+        let immediateInput = try XCTUnwrap(panel.firstResponder as? NSTextView)
+        XCTAssertEqual(immediateInput.string, "AB")
+        immediateInput.deleteBackward(nil)
+        XCTAssertTrue(workspace.prepareForTermination())
+
+        XCTAssertEqual(store.note(withID: note.id)?.content, "A")
+        workspace.closeMemo(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testHorizontalLaneKeepsItsOriginalFIFOAgeAfterMotherCloses() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let first = try store.createNote(title: "A", content: "첫 번째")
+        let second = try store.createNote(title: "B", content: "두 번째")
+        let third = try store.createNote(title: "C", content: "세 번째")
+        let fourth = try store.createNote(title: "D", content: "네 번째")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: first.id, on: .left)
+        workspace.handleClick(noteID: second.id, on: .left)
+        workspace.handleClick(noteID: third.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.createAdjacentMemo(to: first.id, direction: .right)
+        let child = try XCTUnwrap(workspace.notes.first {
+            ![first.id, second.id, third.id, fourth.id].contains($0.id)
+        })
+        workspace.closeMemo(noteID: first.id)
+
+        workspace.handleClick(noteID: fourth.id, on: .left)
+
+        XCTAssertFalse(workspace.presentationState.isIce(child.id), "The oldest lane must be evicted even after its mother closes")
+        XCTAssertTrue(workspace.presentationState.isIce(second.id))
+        XCTAssertTrue(workspace.presentationState.isIce(third.id))
+        XCTAssertTrue(workspace.presentationState.isIce(fourth.id))
+
+        for noteID in workspace.presentationState.iceNoteIDs {
+            workspace.closeMemo(noteID: noteID)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+    }
 }

@@ -426,52 +426,87 @@ final class EdgeLayoutEngineTests: XCTestCase {
         }
     }
 
-    func testNewestIceKeepsClickedIndexAnchorAndOlderPanelsReflowAroundIt() {
-        let clickedIndexTop: CGFloat = 480
-        let frames = (0..<3).map { slot in
-            EdgeLayoutEngine.icePanelFrame(
-                edge: .left,
-                slot: slot,
-                itemCount: 3,
-                newestAnchorY: clickedIndexTop,
-                screenFrame: screen,
-                visibleFrame: visible,
-                storedWidth: 420
-            )
-        }
+    func testOneAndTwoIceLanesKeepFixedHeightAndUncontestedClickPositions() throws {
+        let first = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 320)
+        let second = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 700)
+        let fixedHeight = EdgeLayoutEngine.fixedIcePanelHeight(visibleFrame: visible)
 
-        XCTAssertEqual(frames[0].maxY, clickedIndexTop, accuracy: 0.001)
-        XCTAssertEqual(frames[0].height, frames[1].height, accuracy: 1)
-        XCTAssertEqual(frames[1].height, frames[2].height, accuracy: 1)
-        XCTAssertEqual(frames[1].maxY, frames[0].minY, accuracy: 0.001)
-        XCTAssertEqual(frames[2].minY, frames[0].maxY, accuracy: 0.001)
-        XCTAssertTrue(frames.allSatisfy {
-            $0.minY >= visible.minY - 0.001 && $0.maxY <= visible.maxY + 0.001
-        })
-        XCTAssertTrue(frames.allSatisfy { $0.width == 420 && $0.minX == screen.minX })
+        let one = EdgeLayoutEngine.iceLaneFrames(
+            edge: .left,
+            items: [first],
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        let two = EdgeLayoutEngine.iceLaneFrames(
+            edge: .left,
+            items: [first, second],
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+
+        XCTAssertEqual(try XCTUnwrap(one[first.id]).height, fixedHeight, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(two[first.id]).height, fixedHeight, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(two[second.id]).height, fixedHeight, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(one[first.id]).maxY, 320, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(two[first.id]).maxY, 320, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(two[second.id]).maxY, 700, accuracy: 0.001)
     }
 
-    func testNewestIceNearBottomStaysAtClickAndPushesOlderPanelsUp() {
-        let clickedIndexTop: CGFloat = 110
-        let frames = (0..<3).map { slot in
-            EdgeLayoutEngine.icePanelFrame(
-                edge: .right,
-                slot: slot,
-                itemCount: 3,
-                newestAnchorY: clickedIndexTop,
-                screenFrame: screen,
-                visibleFrame: visible,
-                storedWidth: nil
-            )
-        }
+    func testOverlappingSecondIceKeepsNewClickAndMovesOlderOnItsExistingSide() throws {
+        let older = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 500)
+        let newest = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 480)
+        let frames = EdgeLayoutEngine.iceLaneFrames(
+            edge: .right,
+            items: [older, newest],
+            screenFrame: screen,
+            visibleFrame: visible
+        )
 
-        XCTAssertEqual(frames[0].maxY, clickedIndexTop, accuracy: 0.001)
-        XCTAssertEqual(frames[1].minY, frames[0].maxY, accuracy: 0.001)
-        XCTAssertEqual(frames[2].minY, frames[1].maxY, accuracy: 0.001)
-        XCTAssertTrue(frames.allSatisfy {
-            $0.minY >= visible.minY - 0.001 && $0.maxY <= visible.maxY + 0.001
-        })
-        XCTAssertTrue(frames.allSatisfy { $0.maxX == screen.maxX })
+        let olderFrame = try XCTUnwrap(frames[older.id])
+        let newestFrame = try XCTUnwrap(frames[newest.id])
+        XCTAssertEqual(newestFrame.maxY, 480, accuracy: 0.001)
+        XCTAssertEqual(olderFrame.minY, newestFrame.maxY, accuracy: 0.001)
+        XCTAssertEqual(olderFrame.height, newestFrame.height, accuracy: 0.001)
+    }
+
+    func testNewIceMovesOnlyWhenOlderMemoHasNoRoomOnItsExistingSide() throws {
+        let older = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 320)
+        let newest = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 370)
+        let frames = EdgeLayoutEngine.iceLaneFrames(
+            edge: .right,
+            items: [older, newest],
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+
+        let olderFrame = try XCTUnwrap(frames[older.id])
+        let newestFrame = try XCTUnwrap(frames[newest.id])
+        XCTAssertEqual(olderFrame.maxY, 320, accuracy: 0.001)
+        XCTAssertEqual(newestFrame.minY, olderFrame.maxY, accuracy: 0.001)
+        XCTAssertNotEqual(newestFrame.maxY, 370, accuracy: 0.001)
+    }
+
+    func testThreeIceLanesAloneUseThreeZonesAndNewestTakesNearestZone() throws {
+        let oldest = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 760)
+        let middle = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 180)
+        let newest = EdgeIceLaneLayoutItem(id: UUID(), preferredTopY: 480)
+        let frames = EdgeLayoutEngine.iceLaneFrames(
+            edge: .left,
+            items: [oldest, middle, newest],
+            screenFrame: screen,
+            visibleFrame: visible
+        )
+        let sorted = frames.values.sorted { $0.minY < $1.minY }
+        let fixedHeight = EdgeLayoutEngine.fixedIcePanelHeight(visibleFrame: visible)
+
+        XCTAssertEqual(sorted.count, 3)
+        XCTAssertTrue(sorted.allSatisfy { abs($0.height - fixedHeight) < 0.001 })
+        XCTAssertGreaterThanOrEqual(sorted[0].minY, visible.minY)
+        XCTAssertLessThan(sorted[0].minY - visible.minY, 3)
+        XCTAssertEqual(sorted[0].maxY, sorted[1].minY, accuracy: 0.001)
+        XCTAssertEqual(sorted[1].maxY, sorted[2].minY, accuracy: 0.001)
+        XCTAssertEqual(sorted[2].maxY, visible.maxY, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(frames[newest.id]).minY, sorted[1].minY, accuracy: 0.001)
     }
 
     private func note(
@@ -522,6 +557,46 @@ final class EdgeScreenSelectorTests: XCTestCase {
         )
     }
 
+    func testHotZoneRequiresARealRetreatBeforeTheNextEdgeEntry() {
+        XCTAssertEqual(
+            EdgeHotZoneSpatialResolver.event(isLatched: false, verticalMatch: true, distance: 1),
+            true
+        )
+        XCTAssertNil(
+            EdgeHotZoneSpatialResolver.event(isLatched: true, verticalMatch: true, distance: 5),
+            "Minor edge jitter must not rearm the toggle"
+        )
+        XCTAssertEqual(
+            EdgeHotZoneSpatialResolver.event(isLatched: true, verticalMatch: true, distance: 12),
+            false
+        )
+        XCTAssertEqual(
+            EdgeHotZoneSpatialResolver.event(isLatched: false, verticalMatch: true, distance: 0),
+            true
+        )
+    }
+
+    func testSharedDisplaySeamBelongsToTheScreenEnteredAtThatPoint() throws {
+        let leftScreenRight = EdgeHotZoneID(screenIdentifier: "left", displayID: 1, edge: .right)
+        let rightScreenLeft = EdgeHotZoneID(screenIdentifier: "right", displayID: 2, edge: .left)
+        let seam = CGPoint(x: 1_440, y: 450)
+        let resolved = EdgeHotZoneSeamResolver.preferredZone(
+            at: seam,
+            candidates: [
+                EdgeHotZoneActivationSample(
+                    zoneID: leftScreenRight,
+                    screenFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+                ),
+                EdgeHotZoneActivationSample(
+                    zoneID: rightScreenLeft,
+                    screenFrame: CGRect(x: 1_440, y: 0, width: 1_440, height: 900)
+                )
+            ]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(resolved), rightScreenLeft)
+    }
+
     @MainActor
     func testRemovingAHotZoneScreenClearsItsPointerEdges() {
         let controller = EdgeHotZoneController()
@@ -532,8 +607,8 @@ final class EdgeScreenSelectorTests: XCTestCase {
             visibleFrame: CGRect(x: 0, y: 0, width: 1_440, height: 860)
         )
         var exitEvents: [(EdgeDock, UInt32?)] = []
-        controller.onPointerChange = { edge, displayID, inside in
-            if !inside { exitEvents.append((edge, displayID)) }
+        controller.onPointerChange = { zoneID, inside in
+            if !inside { exitEvents.append((zoneID.edge, zoneID.displayID)) }
         }
 
         controller.update(screens: [screen])
@@ -545,6 +620,29 @@ final class EdgeScreenSelectorTests: XCTestCase {
 }
 
 final class EdgePresentationReducerTests: XCTestCase {
+    func testEdgeEntryShowsHidesAndMovesThePersistentTray() {
+        let left = EdgeHotZoneID(screenIdentifier: "main", displayID: 1, edge: .left)
+        let right = EdgeHotZoneID(screenIdentifier: "main", displayID: 1, edge: .right)
+        let otherDisplayLeft = EdgeHotZoneID(screenIdentifier: "other", displayID: 2, edge: .left)
+
+        XCTAssertEqual(
+            EdgeHotZoneToggleResolver.action(visibleZone: nil, enteredZone: left),
+            .show(left)
+        )
+        XCTAssertEqual(
+            EdgeHotZoneToggleResolver.action(visibleZone: left, enteredZone: left),
+            .hide
+        )
+        XCTAssertEqual(
+            EdgeHotZoneToggleResolver.action(visibleZone: left, enteredZone: right),
+            .move(right)
+        )
+        XCTAssertEqual(
+            EdgeHotZoneToggleResolver.action(visibleZone: left, enteredZone: otherDisplayLeft),
+            .move(otherDisplayLeft)
+        )
+    }
+
     func testClickOpensAndClosesIce() {
         let id = UUID()
         let opened = EdgePresentationReducer.reduce(state: EdgePresentationState(), action: .click(id))

@@ -2,6 +2,22 @@ import AppKit
 import Combine
 import Foundation
 
+private struct RuntimeIceLane {
+    let id: UUID
+    let openedSequence: Int
+    var noteIDs: [UUID]
+    var edge: EdgeDock
+    var displayID: UInt32?
+    var anchorY: CGFloat
+    var horizontalAnchorNoteID: UUID
+}
+
+private struct ReconciledIceEviction {
+    let noteID: UUID
+    let edge: EdgeDock
+    let screen: NSScreen
+}
+
 @MainActor
 final class EdgeWorkspaceController: ObservableObject {
     @Published private(set) var notes: [MemoNote]
@@ -22,19 +38,20 @@ final class EdgeWorkspaceController: ObservableObject {
     private var controlControllers: [EdgeDock: EdgeControlPanelController] = [:]
     private var layoutSnapshot: EdgeLayoutSnapshot = .empty
     private var pointerInsideHandles: Set<UUID> = []
-    private var pointerInsideHotZones: Set<EdgeDock> = []
+    private var pointerInsideHotZones: Set<EdgeHotZoneID> = []
     private var pointerInsideControls: Set<EdgeDock> = []
+    private var visibleHotZoneID: EdgeHotZoneID?
     private var pendingEmptyNoteIDs: Set<UUID> = []
     private var pendingUnsavedContent: [UUID: String] = [:]
     private var iceEdges: [UUID: EdgeDock] = [:]
-    private var iceAnchorY: [UUID: CGFloat] = [:]
+    private var iceLanes: [UUID: RuntimeIceLane] = [:]
+    private var iceLaneIDByNoteID: [UUID: UUID] = [:]
+    private var nextIceLaneSequence = 0
     private var launcherEdge: EdgeDock = .right
     private var interactionDisplayID: UInt32?
     private var launcherAnchorY: [EdgeDock: CGFloat] = [:]
-    private var draftNote: MemoNote?
+    private var draftNotes: [UUID: MemoNote] = [:]
     private var draggingNoteID: UUID?
-    private var revealTask: Task<Void, Never>?
-    private var hideTask: Task<Void, Never>?
     private var collapsingNoteIDs: Set<UUID> = []
     private var observers: [NSObjectProtocol] = []
 
@@ -47,8 +64,11 @@ final class EdgeWorkspaceController: ObservableObject {
         attachmentService = AttachmentService(storageDirectory: storageDirectory)
         assetRootURL = storageDirectory.appendingPathComponent("attachments", isDirectory: true)
         attachmentService.reconcileStagedDeletions(existingNoteIDs: Set(store.notes.map(\.id)))
-        hotZoneController.onPointerChange = { [weak self] edge, displayID, inside in
-            self?.handleHotZonePointer(edge: edge, displayID: displayID, inside: inside)
+        hotZoneController.onPointerChange = { [weak self] zoneID, inside in
+            self?.handleHotZonePointer(zoneID: zoneID, inside: inside)
+        }
+        hotZoneController.onZonesRemoved = { [weak self] zoneIDs in
+            self?.handleHotZonesRemoved(zoneIDs)
         }
         launcherEdge = preferences.defaultEdge.interactiveSide
         for edge in EdgeDock.interactiveCases {
@@ -87,8 +107,6 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     deinit {
-        revealTask?.cancel()
-        hideTask?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -99,6 +117,9 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     func prepareForTermination() -> Bool {
+        for controller in Array(panelControllers.values) {
+            controller.flushPendingInput()
+        }
         let presentedIDs = Set(presentationState.iceNoteIDs)
             .union(pendingEmptyNoteIDs)
             .union(pendingUnsavedContent.keys)
@@ -116,30 +137,75 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func createNote(on edge: EdgeDock) {
         let side = edge.interactiveSide
-        if let draftNote {
-            open(noteID: draftNote.id, on: side, focusEditor: true)
-            return
-        }
-        let timestamp = Date()
-        let placementGroupID = store.defaultGroupID
-        draftNote = MemoNote(
-            title: "새 메모",
-            content: "",
-            color: NoteColor.randomMemoColor(
-                excluding: store.notes.max(by: { $0.updatedAt < $1.updatedAt })?.color
-            ),
-            placement: MemoPlacement(
-                groupID: placementGroupID,
-                order: nextOrder(in: placementGroupID)
-            ),
-            aspectRatio: .portrait,
-            opacity: preferences.defaultOpacity,
-            createdAt: timestamp,
-            updatedAt: timestamp
-        )
+        let draft = makeDraftNote()
+        draftNotes[draft.id] = draft
         reloadNotes()
         refreshLayout()
-        if let draftNote { open(noteID: draftNote.id, on: side, focusEditor: true) }
+        open(noteID: draft.id, on: side, focusEditor: true)
+    }
+
+    func createAdjacentMemo(to sourceNoteID: UUID, direction: MemoAdjacentDirection) {
+        guard presentationState.isIce(sourceNoteID),
+              canAddAdjacentMemo(to: sourceNoteID),
+              let laneID = iceLaneIDByNoteID[sourceNoteID],
+              var lane = iceLanes[laneID],
+              let sourceIndex = lane.noteIDs.firstIndex(of: sourceNoteID),
+              let sourceFrame = panelControllers[sourceNoteID]?.window?.frame
+        else { return }
+
+        guard let sourceNote = note(withID: sourceNoteID) else { return }
+        let draft = makeDraftNote(inheritingColorFrom: sourceNote)
+        draftNotes[draft.id] = draft
+        let insertionIndex = direction == .left ? sourceIndex : sourceIndex + 1
+        lane.noteIDs.insert(draft.id, at: insertionIndex)
+        lane.horizontalAnchorNoteID = sourceNoteID
+        iceLanes[laneID] = lane
+        iceLaneIDByNoteID[draft.id] = laneID
+        iceEdges[draft.id] = lane.edge
+        presentationState = EdgePresentationReducer.reduce(
+            state: presentationState,
+            action: .open(draft.id)
+        )
+        preferences.lastNoteID = draft.id
+        indexVisibility = .hidden
+        visibleHotZoneID = nil
+        reloadNotes()
+        refreshLayoutSnapshot()
+
+        let screen = screen(for: lane)
+        let finalFrame = resolvedIcePanelFrames(on: screen)[draft.id]
+            ?? CGRect(
+                x: sourceFrame.minX,
+                y: sourceFrame.minY,
+                width: min(EdgeLayoutEngine.panelWidth, screen.frame.width),
+                height: EdgeLayoutEngine.fixedIcePanelHeight(visibleFrame: screen.visibleFrame)
+            )
+        let originX = direction == .left ? sourceFrame.minX : sourceFrame.maxX - EdgeLayoutEngine.sideHandleHeight
+        let revealOrigin = CGRect(
+            x: originX,
+            y: sourceFrame.midY - EdgeLayoutEngine.sideHandleHeight / 2,
+            width: EdgeLayoutEngine.sideHandleHeight,
+            height: EdgeLayoutEngine.sideHandleHeight
+        )
+        let controller = panelController(for: draft.id)
+        controller.show(
+            note: draft,
+            frame: finalFrame,
+            handleFrame: revealOrigin,
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            edge: lane.edge,
+            canAddAdjacent: canAddAdjacentMemo(to: draft.id),
+            focusEditor: true,
+            onTitleChange: { [weak self] title in
+                self?.handlePanelTitleChange(noteID: draft.id, title: title)
+            }
+        ) { [weak self] content in
+            self?.handleContentChange(noteID: draft.id, content: content)
+        }
+        controller.setCollapseTargetFrame(collapseTargetFrame(for: draft, edge: lane.edge, screen: screen))
+        refreshLayout(excludingPanelID: draft.id)
+        onPresentationChange?(true)
     }
 
     func handleClick(noteID: UUID, on edge: EdgeDock? = nil) {
@@ -181,6 +247,7 @@ final class EdgeWorkspaceController: ObservableObject {
             state: presentationState,
             action: .close(closingID)
         )
+        removeFromIceLane(noteID: closingID)
         refreshLayout()
         if pointerInsideHotZones.isEmpty,
            pointerInsideHandles.isEmpty {
@@ -197,12 +264,8 @@ final class EdgeWorkspaceController: ObservableObject {
                 self.panelControllers.removeValue(forKey: closingID)
             }
             self.iceEdges.removeValue(forKey: closingID)
-            self.iceAnchorY.removeValue(forKey: closingID)
             self.refreshHandleSelection()
-            if self.pointerInsideHotZones.isEmpty,
-               self.pointerInsideHandles.isEmpty,
-               self.pointerInsideControls.isEmpty,
-               self.draggingNoteID == nil {
+            if case .transitioning(closingID) = self.indexVisibility {
                 self.indexVisibility = .hidden
                 self.applyIndexVisibility()
             }
@@ -210,7 +273,6 @@ final class EdgeWorkspaceController: ObservableObject {
         if controller == nil {
             collapsingNoteIDs.remove(closingID)
             iceEdges.removeValue(forKey: closingID)
-            iceAnchorY.removeValue(forKey: closingID)
         }
         finalizeTransientState(noteID: closingID)
         onPresentationChange?(presentationState.hasOpenPanels)
@@ -233,7 +295,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     func delete(noteID: UUID) {
-        if draftNote?.id == noteID || pendingEmptyNoteIDs.contains(noteID) {
+        if draftNotes[noteID] != nil || pendingEmptyNoteIDs.contains(noteID) {
             if presentationState.isPresented(noteID) {
                 closeMemo(noteID: noteID)
             } else {
@@ -246,10 +308,10 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     func updateTitle(noteID: UUID, title: String) {
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             draft.title = title
             draft.isTitleExplicit = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            draftNote = draft
+            draftNotes[noteID] = draft
             reloadNotes()
         } else {
             store.updateTitle(noteID: noteID, title: title)
@@ -265,12 +327,12 @@ final class EdgeWorkspaceController: ObservableObject {
         aspectRatio: MemoAspectRatio? = nil,
         opacity: Double? = nil
     ) {
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             if let color { draft.color = color }
             if let textColorHex { draft.textColorHex = textColorHex }
             if let aspectRatio { draft.aspectRatio = aspectRatio }
             if let opacity { draft.opacity = opacity }
-            draftNote = draft
+            draftNotes[noteID] = draft
             reloadNotes()
         } else {
             store.updateAppearance(
@@ -326,26 +388,41 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
         let edge = (requestedEdge ?? launcherEdge).interactiveSide
-        let sameEdge = presentationState.iceNoteIDs.filter { iceEdges[$0] == edge }
-        let evictedID = sameEdge.count >= EdgeLayoutEngine.maxIcePerEdge
-            ? sameEdge.first
+        let screen = targetScreen()
+        let sameEdgeLanes = orderedLaneIDs(on: edge, displayID: screen.memoDisplayID)
+        let evictedLaneID = sameEdgeLanes.count >= EdgeLayoutEngine.maxIcePerEdge
+            ? sameEdgeLanes.first
             : nil
+        let evictedIDs = evictedLaneID.flatMap { iceLanes[$0]?.noteIDs } ?? []
         collapsingNoteIDs.remove(noteID)
         launcherEdge = edge
         refreshLayoutSnapshot()
 
         guard let handleFrame = layoutSnapshot.handleFrames[noteID] else { return }
-        let screen = targetScreen()
-
-        if let evictedID {
+        for evictedID in evictedIDs {
             guard prepareContentForClosure(noteID: evictedID) else { return }
+        }
+        for evictedID in evictedIDs {
             collapsingNoteIDs.insert(evictedID)
             presentationState = EdgePresentationReducer.reduce(
                 state: presentationState,
                 action: .close(evictedID)
             )
         }
-        iceAnchorY[noteID] = handleFrame.maxY
+        if let evictedLaneID { removeIceLane(laneID: evictedLaneID) }
+
+        let laneID = UUID()
+        iceLanes[laneID] = RuntimeIceLane(
+            id: laneID,
+            openedSequence: nextIceLaneSequence,
+            noteIDs: [noteID],
+            edge: edge,
+            displayID: screen.memoDisplayID,
+            anchorY: handleFrame.maxY,
+            horizontalAnchorNoteID: noteID
+        )
+        nextIceLaneSequence += 1
+        iceLaneIDByNoteID[noteID] = laneID
         presentationState = EdgePresentationReducer.reduce(
             state: presentationState,
             action: .open(noteID)
@@ -353,6 +430,7 @@ final class EdgeWorkspaceController: ObservableObject {
         iceEdges[noteID] = edge
         launcherEdge = edge
         indexVisibility = .hidden
+        visibleHotZoneID = nil
         handleControllers[noteID]?.hide(animated: false)
         refreshLayoutSnapshot()
         let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
@@ -364,6 +442,7 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
+            canAddAdjacent: canAddAdjacentMemo(to: noteID),
             focusEditor: focusEditor,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: noteID, title: title)
@@ -372,7 +451,7 @@ final class EdgeWorkspaceController: ObservableObject {
             self?.handleContentChange(noteID: noteID, content: content)
         }
         refreshLayout(excludingPanelID: noteID)
-        if let evictedID {
+        for evictedID in evictedIDs {
             foldEvictedIce(noteID: evictedID, edge: edge, screen: screen)
         }
         onPresentationChange?(true)
@@ -396,13 +475,11 @@ final class EdgeWorkspaceController: ObservableObject {
                 self.panelControllers.removeValue(forKey: noteID)
             }
             self.iceEdges.removeValue(forKey: noteID)
-            self.iceAnchorY.removeValue(forKey: noteID)
             self.refreshHandleSelection()
         })
         if controller == nil {
             collapsingNoteIDs.remove(noteID)
             iceEdges.removeValue(forKey: noteID)
-            iceAnchorY.removeValue(forKey: noteID)
         }
         finalizeTransientState(noteID: noteID)
     }
@@ -412,6 +489,9 @@ final class EdgeWorkspaceController: ObservableObject {
 
         let controller = MemoPanelController(assetRootURL: assetRootURL)
         controller.onFold = { [weak self] in self?.closeMemo(noteID: noteID) }
+        controller.onCreateAdjacent = { [weak self] direction in
+            self?.createAdjacentMemo(to: noteID, direction: direction)
+        }
         controller.onImageUpload = { [weak self] requestedNoteID, data, originalName in
             guard let self else { throw CocoaError(.fileWriteUnknown) }
             return try self.importImage(
@@ -440,18 +520,9 @@ final class EdgeWorkspaceController: ObservableObject {
 
     private func prepareIndexHandoff(noteID: UUID) {
         collapsingNoteIDs.remove(noteID)
-        let pointerOverIndex = layoutSnapshot.handleFrames[noteID]?.contains(NSEvent.mouseLocation) == true
-        if pointerOverIndex, let edge = edge(for: noteID) {
-            indexVisibility = .visible(edge)
-        } else if pointerInsideHotZones.isEmpty,
-                  pointerInsideHandles.isEmpty,
-                  pointerInsideControls.isEmpty {
-            indexVisibility = .hidden
-        }
+        guard case .transitioning(noteID) = indexVisibility else { return }
         refreshHandleSelection()
-        if pointerOverIndex {
-            handleControllers[noteID]?.show(animated: false)
-        }
+        handleControllers[noteID]?.show(animated: false)
     }
 
     private func focusIce(noteID: UUID) {
@@ -470,17 +541,17 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func handleContentChange(noteID: UUID, content: String) {
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             draft.content = content
             draft.updatedAt = Date()
-            draftNote = draft
+            draftNotes[noteID] = draft
             guard MemoNote.hasMeaningfulContent(content) else {
                 reloadNotes()
                 return
             }
             do {
                 _ = try store.commitDraft(draft)
-                draftNote = nil
+                draftNotes.removeValue(forKey: noteID)
                 reloadNotes()
                 refreshLayout()
             } catch {
@@ -513,10 +584,10 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func handlePanelTitleChange(noteID: UUID, title: String) {
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             draft.title = title
             draft.isTitleExplicit = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            draftNote = draft
+            draftNotes[noteID] = draft
         } else {
             store.updateTitle(noteID: noteID, title: title)
             if let error = store.lastPersistenceError { showPersistenceAlert(error) }
@@ -528,10 +599,10 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func handlePanelResize(noteID: UUID, size: CGSize) {
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             let storedHeight = draft.panelSize?.cgSize.height ?? MemoPanelSize.minimum.height
             draft.panelSize = MemoPanelSize(width: size.width, height: storedHeight)
-            draftNote = draft
+            draftNotes[noteID] = draft
         } else {
             store.updatePanelWidth(noteID: noteID, width: size.width)
             if let error = store.lastPersistenceError { showPersistenceAlert(error) }
@@ -545,7 +616,7 @@ final class EdgeWorkspaceController: ObservableObject {
               let note = note(withID: noteID),
               let edge = iceEdges[noteID]
         else { return }
-        let screen = targetScreen()
+        let screen = screen(forNoteID: noteID)
         let handleFrame = collapseTargetFrame(for: note, edge: edge, screen: screen)
         let frame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
         panelControllers[noteID]?.reposition(
@@ -558,8 +629,8 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func refreshLayout(excludingPanelID: UUID? = nil) {
-        let screen = targetScreen()
         hotZoneController.update(screens: hotZoneScreens())
+        let reconciledEvictions = reconcileIceLaneDisplays()
         refreshLayoutSnapshot()
         refreshHandles()
 
@@ -568,6 +639,7 @@ final class EdgeWorkspaceController: ObservableObject {
             guard let note = note(withID: noteID),
                   let edge = iceEdges[noteID]
             else { continue }
+            let screen = screen(forNoteID: noteID)
             let handleFrame = collapseTargetFrame(for: note, edge: edge, screen: screen)
             let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
             panelController(for: noteID).show(
@@ -577,6 +649,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 screenFrame: screen.frame,
                 visibleFrame: screen.visibleFrame,
                 edge: edge,
+                canAddAdjacent: canAddAdjacentMemo(to: noteID),
                 focusEditor: false,
                 onTitleChange: { [weak self] title in
                     self?.handlePanelTitleChange(noteID: noteID, title: title)
@@ -584,6 +657,16 @@ final class EdgeWorkspaceController: ObservableObject {
             ) { [weak self] content in
                 self?.handleContentChange(noteID: noteID, content: content)
             }
+        }
+        for eviction in reconciledEvictions {
+            foldEvictedIce(
+                noteID: eviction.noteID,
+                edge: eviction.edge,
+                screen: eviction.screen
+            )
+        }
+        if !reconciledEvictions.isEmpty {
+            onPresentationChange?(presentationState.hasOpenPanels)
         }
     }
 
@@ -606,20 +689,71 @@ final class EdgeWorkspaceController: ObservableObject {
         edge: EdgeDock,
         screen: NSScreen
     ) -> CGRect {
-        let newestFirst = Array(presentationState.iceNoteIDs
-            .filter { iceEdges[$0] == edge }
-            .reversed())
-        let slot = newestFirst.firstIndex(of: note.id) ?? 0
-        let newestAnchorY = newestFirst.first.flatMap { iceAnchorY[$0] } ?? handleFrame.maxY
-        return EdgeLayoutEngine.icePanelFrame(
-            edge: edge,
-            slot: slot,
-            itemCount: newestFirst.count,
-            newestAnchorY: newestAnchorY,
-            screenFrame: screen.frame,
-            visibleFrame: screen.visibleFrame,
-            storedWidth: note.panelSize?.cgSize.width
-        )
+        resolvedIcePanelFrames(on: screen)[note.id]
+            ?? EdgeLayoutEngine.panelFrame(
+                adjacentTo: handleFrame,
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame,
+                edge: edge,
+                aspectRatio: note.aspectRatio.value,
+                panelSize: note.panelSize
+            )
+    }
+
+    private func resolvedIcePanelFrames(on screen: NSScreen) -> [UUID: CGRect] {
+        var result: [UUID: CGRect] = [:]
+        for edge in EdgeDock.interactiveCases {
+            let laneIDs = orderedLaneIDs(on: edge, displayID: screen.memoDisplayID)
+            let items = laneIDs.compactMap { laneID -> EdgeIceLaneLayoutItem? in
+                guard let lane = iceLanes[laneID] else { return nil }
+                return EdgeIceLaneLayoutItem(id: lane.id, preferredTopY: lane.anchorY)
+            }
+            let verticalFrames = EdgeLayoutEngine.iceLaneFrames(
+                edge: edge,
+                items: items,
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame
+            )
+
+            for laneID in laneIDs {
+                guard let lane = iceLanes[laneID],
+                      let verticalFrame = verticalFrames[laneID]
+                else { continue }
+                let laneNotes = lane.noteIDs.compactMap(note(withID:))
+                guard !laneNotes.isEmpty else { continue }
+                let widths = resolvedLaneWidths(
+                    laneNotes.map { requestedPanelWidth(for: $0, screen: screen) },
+                    availableWidth: screen.frame.width,
+                    gap: EdgeLayoutEngine.laneGap
+                )
+                let totalWidth = widths.reduce(0, +)
+                    + EdgeLayoutEngine.laneGap * CGFloat(max(0, widths.count - 1))
+                let anchorIndex = lane.noteIDs.firstIndex(of: lane.horizontalAnchorNoteID) ?? 0
+                let widthBeforeAnchor = widths.prefix(anchorIndex).reduce(0, +)
+                    + EdgeLayoutEngine.laneGap * CGFloat(anchorIndex)
+                let currentAnchorX = lane.noteIDs.count > 1
+                    ? panelControllers[lane.horizontalAnchorNoteID]?.window?.frame.minX
+                    : nil
+                let edgeOrigin = edge == .right ? screen.frame.maxX - totalWidth : screen.frame.minX
+                let desiredOrigin = currentAnchorX.map { $0 - widthBeforeAnchor } ?? edgeOrigin
+                let originX = min(
+                    screen.frame.maxX - totalWidth,
+                    max(screen.frame.minX, desiredOrigin)
+                )
+
+                var x = originX
+                for (note, width) in zip(laneNotes, widths) {
+                    result[note.id] = CGRect(
+                        x: x,
+                        y: verticalFrame.minY,
+                        width: width,
+                        height: verticalFrame.height
+                    )
+                    x += width + EdgeLayoutEngine.laneGap
+                }
+            }
+        }
+        return result
     }
 
     private func collapseTargetFrame(for note: MemoNote, edge: EdgeDock, screen: NSScreen) -> CGRect {
@@ -712,77 +846,58 @@ final class EdgeWorkspaceController: ObservableObject {
         applyIndexVisibility()
     }
 
-    private func handleHotZonePointer(edge: EdgeDock, displayID: UInt32?, inside: Bool) {
+    private func handleHotZonePointer(zoneID: EdgeHotZoneID, inside: Bool) {
         if inside {
-            let side = edge.interactiveSide
-            interactionDisplayID = displayID
-            pointerInsideHotZones.insert(side)
-            launcherAnchorY[side] = NSEvent.mouseLocation.y
-            hideTask?.cancel()
-            scheduleReveal(edge: side)
+            guard draggingNoteID == nil,
+                  pointerInsideHotZones.insert(zoneID).inserted
+            else { return }
+            switch EdgeHotZoneToggleResolver.action(
+                visibleZone: visibleHotZoneID,
+                enteredZone: zoneID
+            ) {
+            case let .show(target), let .move(target):
+                if visibleHotZoneID != nil { hideTrayImmediately() }
+                let side = target.interactiveSide
+                interactionDisplayID = target.displayID
+                launcherAnchorY[side] = NSEvent.mouseLocation.y
+                launcherEdge = side
+                visibleHotZoneID = target
+                indexVisibility = .visible(side)
+                refreshLayout()
+            case .hide:
+                visibleHotZoneID = nil
+                indexVisibility = .hidden
+                applyIndexVisibility()
+            }
         } else {
-            pointerInsideHotZones.remove(edge.interactiveSide)
-            revealTask?.cancel()
-            scheduleHideIndices()
+            pointerInsideHotZones.remove(zoneID)
         }
+    }
+
+    private func handleHotZonesRemoved(_ zoneIDs: Set<EdgeHotZoneID>) {
+        pointerInsideHotZones.subtract(zoneIDs)
+        guard let visibleHotZoneID, zoneIDs.contains(visibleHotZoneID) else { return }
+        self.visibleHotZoneID = nil
+        if interactionDisplayID == visibleHotZoneID.displayID {
+            interactionDisplayID = nil
+        }
+        indexVisibility = .hidden
+        applyIndexVisibility()
     }
 
     private func handleControlPointer(edge: EdgeDock, inside: Bool) {
         if inside {
             pointerInsideControls.insert(edge)
-            hideTask?.cancel()
         } else {
             pointerInsideControls.remove(edge)
-            scheduleHideIndices()
         }
     }
 
     private func handleIndexPointer(noteID: UUID, inside: Bool) {
         if inside {
             pointerInsideHandles.insert(noteID)
-            hideTask?.cancel()
         } else {
             pointerInsideHandles.remove(noteID)
-            scheduleHideIndices()
-        }
-    }
-
-    private func scheduleReveal(edge: EdgeDock) {
-        revealTask?.cancel()
-        revealTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: .seconds(preferences.revealDelay))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard self.pointerInsideHotZones.contains(edge), self.draggingNoteID == nil else { return }
-                if self.launcherEdge != edge.interactiveSide {
-                    self.hideTrayImmediately()
-                }
-                self.launcherEdge = edge.interactiveSide
-                self.indexVisibility = .visible(edge)
-                self.refreshLayout()
-            }
-        }
-    }
-
-    private func scheduleHideIndices() {
-        guard draggingNoteID == nil,
-              collapsingNoteIDs.isEmpty
-        else { return }
-        hideTask?.cancel()
-        hideTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: .seconds(preferences.hideDelay))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard self.pointerInsideHotZones.isEmpty,
-                      self.pointerInsideHandles.isEmpty,
-                      self.pointerInsideControls.isEmpty,
-                      self.collapsingNoteIDs.isEmpty
-                else { return }
-                self.indexVisibility = .hidden
-                self.applyIndexVisibility()
-            }
         }
     }
 
@@ -830,8 +945,6 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func beginDrag(noteID: UUID) {
-        revealTask?.cancel()
-        hideTask?.cancel()
         draggingNoteID = noteID
         indexVisibility = .dragging(noteID)
         let screen = targetScreen()
@@ -867,9 +980,6 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         defer {
             endDragInteraction()
-            if case .visible = indexVisibility {
-                scheduleHideIndices()
-            }
         }
         guard note(withID: noteID) != nil else {
             indexVisibility = .hidden
@@ -931,7 +1041,6 @@ final class EdgeWorkspaceController: ObservableObject {
             delete(noteID: noteID)
         } else {
             refreshLayout()
-            scheduleHideIndices()
         }
     }
 
@@ -947,10 +1056,10 @@ final class EdgeWorkspaceController: ObservableObject {
             originalName: imported.originalName
         )
 
-        if var draft = draftNote, draft.id == noteID {
+        if var draft = draftNotes[noteID] {
             draft.attachments.append(attachment)
             draft.updatedAt = Date()
-            draftNote = draft
+            draftNotes[noteID] = draft
         } else {
             store.appendAttachment(noteID: noteID, attachment: attachment)
             if let error = store.lastPersistenceError {
@@ -963,14 +1072,14 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func finalizeTransientState(noteID: UUID) {
-        if let draft = draftNote, draft.id == noteID {
+        if let draft = draftNotes[noteID] {
             for attachment in draft.attachments {
                 attachmentService.removeImportedAttachment(
                     noteID: noteID,
                     fileName: attachment.fileName
                 )
             }
-            draftNote = nil
+            draftNotes.removeValue(forKey: noteID)
             reloadNotes()
             refreshLayout()
             return
@@ -981,11 +1090,11 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func prepareContentForClosure(noteID: UUID) -> Bool {
-        if let draft = draftNote, draft.id == noteID,
+        if let draft = draftNotes[noteID],
            MemoNote.hasMeaningfulContent(draft.content) || !draft.attachments.isEmpty {
             do {
                 _ = try store.commitDraft(draft)
-                draftNote = nil
+                draftNotes.removeValue(forKey: noteID)
                 reloadNotes()
             } catch {
                 showPersistenceAlert(error)
@@ -1025,6 +1134,111 @@ final class EdgeWorkspaceController: ObservableObject {
         refreshLayout()
     }
 
+    private func makeDraftNote(inheritingColorFrom source: MemoNote? = nil) -> MemoNote {
+        let timestamp = Date()
+        let placementGroupID = store.defaultGroupID
+        return MemoNote(
+            title: "새 메모",
+            content: "",
+            color: source?.color ?? NoteColor.randomMemoColor(
+                excluding: notes.max(by: { $0.updatedAt < $1.updatedAt })?.color
+            ),
+            placement: MemoPlacement(
+                groupID: placementGroupID,
+                order: nextOrder(in: placementGroupID)
+            ),
+            aspectRatio: .portrait,
+            opacity: preferences.defaultOpacity,
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+    }
+
+    private func orderedLaneIDs(on edge: EdgeDock, displayID: UInt32?) -> [UUID] {
+        iceLanes.values
+            .filter { lane in
+                lane.edge == edge
+                    && lane.displayID == displayID
+                    && lane.noteIDs.contains(where: presentationState.isIce)
+            }
+            .sorted { $0.openedSequence < $1.openedSequence }
+            .map(\.id)
+    }
+
+    private func removeFromIceLane(noteID: UUID) {
+        guard let laneID = iceLaneIDByNoteID.removeValue(forKey: noteID),
+              var lane = iceLanes[laneID]
+        else { return }
+        lane.noteIDs.removeAll { $0 == noteID }
+        guard !lane.noteIDs.isEmpty else {
+            iceLanes.removeValue(forKey: laneID)
+            return
+        }
+        if lane.horizontalAnchorNoteID == noteID {
+            lane.horizontalAnchorNoteID = lane.noteIDs[0]
+        }
+        iceLanes[laneID] = lane
+    }
+
+    private func removeIceLane(laneID: UUID) {
+        guard let lane = iceLanes.removeValue(forKey: laneID) else { return }
+        for noteID in lane.noteIDs {
+            iceLaneIDByNoteID.removeValue(forKey: noteID)
+        }
+    }
+
+    private func requestedPanelWidth(for note: MemoNote, screen: NSScreen) -> CGFloat {
+        min(
+            min(MemoPanelSize.maximum.width, screen.frame.width),
+            max(MemoPanelSize.minimum.width, note.panelSize?.cgSize.width ?? EdgeLayoutEngine.panelWidth)
+        )
+    }
+
+    private func canAddAdjacentMemo(to noteID: UUID) -> Bool {
+        guard let laneID = iceLaneIDByNoteID[noteID],
+              let lane = iceLanes[laneID]
+        else { return false }
+        let screen = screen(for: lane)
+        let currentWidths = lane.noteIDs.compactMap(note(withID:)).map {
+            requestedPanelWidth(for: $0, screen: screen)
+        }
+        let requestedNewWidth = min(EdgeLayoutEngine.panelWidth, screen.frame.width)
+        let total = currentWidths.reduce(0, +)
+            + requestedNewWidth
+            + EdgeLayoutEngine.laneGap * CGFloat(currentWidths.count)
+        return total <= screen.frame.width + 0.001
+    }
+
+    private func resolvedLaneWidths(
+        _ requested: [CGFloat],
+        availableWidth: CGFloat,
+        gap: CGFloat
+    ) -> [CGFloat] {
+        guard !requested.isEmpty else { return [] }
+        let gapWidth = gap * CGFloat(max(0, requested.count - 1))
+        let target = max(CGFloat(requested.count), availableWidth - gapWidth)
+        var widths = requested
+        var excess = widths.reduce(0, +) - target
+        while excess > 0.001 {
+            let shrinkable = widths.indices.filter { widths[$0] > MemoPanelSize.minimum.width + 0.001 }
+            guard !shrinkable.isEmpty else { break }
+            let share = excess / CGFloat(shrinkable.count)
+            var removed: CGFloat = 0
+            for index in shrinkable {
+                let reduction = min(share, widths[index] - MemoPanelSize.minimum.width)
+                widths[index] -= reduction
+                removed += reduction
+            }
+            guard removed > 0.001 else { break }
+            excess -= removed
+        }
+        if excess > 0.001 {
+            let share = excess / CGFloat(widths.count)
+            widths = widths.map { max(1, $0 - share) }
+        }
+        return widths
+    }
+
     private func nextOrder(in groupID: UUID) -> Int {
         (notes.filter { $0.placement.groupID == groupID }.map(\.placement.order).max() ?? -1) + 1
     }
@@ -1040,6 +1254,70 @@ final class EdgeWorkspaceController: ObservableObject {
             pointer: NSEvent.mouseLocation
         ) ?? 0
         return screens[index]
+    }
+
+    private func screen(for lane: RuntimeIceLane) -> NSScreen {
+        if let displayID = lane.displayID,
+           let screen = NSScreen.screens.first(where: { $0.memoDisplayID == displayID }) {
+            return screen
+        }
+        return targetScreen()
+    }
+
+    private func screen(forNoteID noteID: UUID) -> NSScreen {
+        guard let laneID = iceLaneIDByNoteID[noteID],
+              let lane = iceLanes[laneID]
+        else { return targetScreen() }
+        return screen(for: lane)
+    }
+
+    private func reconcileIceLaneDisplays() -> [ReconciledIceEviction] {
+        let availableDisplayIDs = Set(NSScreen.screens.compactMap(\.memoDisplayID))
+        guard !iceLanes.isEmpty else { return [] }
+        let fallbackDisplayID = targetScreen().memoDisplayID
+        for (laneID, var lane) in iceLanes {
+            if let displayID = lane.displayID, availableDisplayIDs.contains(displayID) { continue }
+            lane.displayID = fallbackDisplayID
+            iceLanes[laneID] = lane
+        }
+
+        var evictions: [ReconciledIceEviction] = []
+        let displayIDs = Set(iceLanes.values.map(\.displayID))
+        for displayID in displayIDs {
+            for edge in EdgeDock.interactiveCases {
+                let lanes = iceLanes.values
+                    .filter {
+                        $0.displayID == displayID
+                            && $0.edge == edge
+                            && $0.noteIDs.contains(where: presentationState.isIce)
+                    }
+                    .sorted { $0.openedSequence < $1.openedSequence }
+                let overflowCount = max(0, lanes.count - EdgeLayoutEngine.maxIcePerEdge)
+                for lane in lanes.prefix(overflowCount) {
+                    let noteIDs = lane.noteIDs.filter(presentationState.isIce)
+                    guard noteIDs.allSatisfy({ prepareContentForClosure(noteID: $0) }) else {
+                        continue
+                    }
+                    let fallbackScreen = screen(for: lane)
+                    for noteID in noteIDs {
+                        collapsingNoteIDs.insert(noteID)
+                        presentationState = EdgePresentationReducer.reduce(
+                            state: presentationState,
+                            action: .close(noteID)
+                        )
+                        evictions.append(
+                            ReconciledIceEviction(
+                                noteID: noteID,
+                                edge: edge,
+                                screen: fallbackScreen
+                            )
+                        )
+                    }
+                    removeIceLane(laneID: lane.id)
+                }
+            }
+        }
+        return evictions
     }
 
     private func hotZoneScreens() -> [EdgeHotZoneScreen] {
@@ -1071,7 +1349,7 @@ final class EdgeWorkspaceController: ObservableObject {
         for noteID in pendingEmptyNoteIDs {
             if let index = notes.firstIndex(where: { $0.id == noteID }) { notes[index].content = "" }
         }
-        if let draftNote { notes.append(draftNote) }
+        notes.append(contentsOf: draftNotes.values.sorted { $0.createdAt < $1.createdAt })
     }
 
     private func showPersistenceAlert(_ error: Error) {

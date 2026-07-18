@@ -8,10 +8,16 @@ struct EdgeLayoutSnapshot: Equatable {
     static let empty = EdgeLayoutSnapshot(handleFrames: [:], groupFrames: [:])
 }
 
+struct EdgeIceLaneLayoutItem: Equatable {
+    let id: UUID
+    let preferredTopY: CGFloat
+}
+
 enum EdgeLayoutEngine {
     static let sideHandleHeight: CGFloat = 26
     static let topHandleHeight: CGFloat = 26
     static let groupGap: CGFloat = 7
+    static let laneGap: CGFloat = 8
     static let mergeDistance: CGFloat = 12
     static let edgeDropDistance: CGFloat = 28
     static let panelWidth: CGFloat = 340
@@ -238,78 +244,136 @@ enum EdgeLayoutEngine {
         return EdgeLayoutSnapshot(handleFrames: handleFrames, groupFrames: groupFrames)
     }
 
-    static func icePanelFrame(
+    static func fixedIcePanelHeight(visibleFrame: CGRect) -> CGFloat {
+        // NSWindow frames settle on device-aligned whole points. Flooring once
+        // here keeps all three panels exactly equal without the 1pt overlaps
+        // produced by independently rounding fractional thirds.
+        max(1, floor(visibleFrame.height / CGFloat(maxIcePerEdge)))
+    }
+
+    static func iceLaneFrames(
         edge: EdgeDock,
-        slot: Int,
-        itemCount: Int,
-        newestAnchorY: CGFloat,
+        items: [EdgeIceLaneLayoutItem],
         screenFrame: CGRect,
-        visibleFrame: CGRect,
-        storedWidth: CGFloat?
-    ) -> CGRect {
-        let safeCount = min(maxIcePerEdge, max(1, itemCount))
-        let safeSlot = min(safeCount - 1, max(0, slot))
-        let requestedWidth = storedWidth ?? panelWidth
-        let width = min(
-            min(MemoPanelSize.maximum.width, visibleFrame.width),
-            max(MemoPanelSize.minimum.width, requestedWidth)
-        )
-        let anchorTop = min(
-            visibleFrame.maxY,
-            max(visibleFrame.minY + titleBarHeight, newestAnchorY)
+        visibleFrame: CGRect
+    ) -> [UUID: CGRect] {
+        let safeItems = Array(items.prefix(maxIcePerEdge))
+        guard !safeItems.isEmpty else { return [:] }
+
+        let height = fixedIcePanelHeight(visibleFrame: visibleFrame)
+        let x = edge == .right ? screenFrame.maxX - 1 : screenFrame.minX
+
+        func frame(topY: CGFloat) -> CGRect {
+            let clampedTop = min(
+                visibleFrame.maxY,
+                max(visibleFrame.minY + height, topY)
+            )
+            return CGRect(x: x, y: clampedTop - height, width: 1, height: height)
+        }
+
+        func fits(_ frame: CGRect) -> Bool {
+            frame.minY >= visibleFrame.minY - 0.001
+                && frame.maxY <= visibleFrame.maxY + 0.001
+        }
+
+        let preferred = Dictionary(
+            uniqueKeysWithValues: safeItems.map { ($0.id, frame(topY: $0.preferredTopY)) }
         )
 
-        // Keep the newest ICE at the clicked index. Older ICE panels fill the
-        // space below first, then spill above when the lower edge is full.
-        // The shared height shrinks only as much as needed to keep every panel
-        // visible and non-overlapping.
-        let olderCount = safeCount - 1
-        var belowCount = 0
-        var panelHeight: CGFloat = 1
-        for candidateBelow in 0...olderCount {
-            let candidateAbove = olderCount - candidateBelow
-            let belowHeight = (anchorTop - visibleFrame.minY) / CGFloat(candidateBelow + 1)
-            let aboveHeight = candidateAbove == 0
-                ? .greatestFiniteMagnitude
-                : (visibleFrame.maxY - anchorTop) / CGFloat(candidateAbove)
-            let candidateHeight = min(visibleFrame.height / CGFloat(maxIcePerEdge), belowHeight, aboveHeight)
-            if candidateHeight > panelHeight + 0.5
-                || (abs(candidateHeight - panelHeight) <= 0.5 && candidateBelow > belowCount) {
-                panelHeight = candidateHeight
-                belowCount = candidateBelow
+        if safeItems.count == 1 {
+            return preferred
+        }
+
+        if safeItems.count == 2 {
+            let older = safeItems[0]
+            let newest = safeItems[1]
+            let olderFrame = preferred[older.id]!
+            let newestFrame = preferred[newest.id]!
+
+            if olderFrame.intersection(newestFrame).height <= 0.001 {
+                return preferred
+            }
+
+            // Preserve the existing memo's side of the new click. Moving an
+            // older memo through the newly opened memo is perceived as a
+            // teleport, so the older memo gets the first chance to move only
+            // on its current side.
+            let olderIsAbove = olderFrame.midY > newestFrame.midY
+            let movedOlder = CGRect(
+                x: x,
+                y: olderIsAbove ? newestFrame.maxY : newestFrame.minY - height,
+                width: 1,
+                height: height
+            )
+            if fits(movedOlder) {
+                return [older.id: movedOlder, newest.id: newestFrame]
+            }
+
+            // If the older memo has no sensible room on that side, keep it and
+            // move the new memo the shortest distance that resolves overlap.
+            let movedNewest = CGRect(
+                x: x,
+                y: olderIsAbove ? olderFrame.minY - height : olderFrame.maxY,
+                width: 1,
+                height: height
+            )
+            if fits(movedNewest) {
+                return [older.id: olderFrame, newest.id: movedNewest]
+            }
+
+            // Defensive fallback for future larger fixed heights or reserved
+            // screen regions. Keep the relative order and fit the pair as near
+            // as possible to the new memo's requested location.
+            let pairHeight = min(visibleFrame.height, height * 2)
+            let pairTop = min(
+                visibleFrame.maxY,
+                max(visibleFrame.minY + pairHeight, newest.preferredTopY)
+            )
+            if olderIsAbove {
+                return [
+                    older.id: CGRect(x: x, y: pairTop - height, width: 1, height: height),
+                    newest.id: CGRect(x: x, y: pairTop - height * 2, width: 1, height: height)
+                ]
+            }
+            return [
+                older.id: CGRect(x: x, y: pairTop - height * 2, width: 1, height: height),
+                newest.id: CGRect(x: x, y: pairTop - height, width: 1, height: height)
+            ]
+        }
+
+        // Three lanes are the only state that opts into a strict three-zone
+        // grid. The newest lane takes the zone nearest its click, while the two
+        // earlier lanes use the remaining zones with the least total movement.
+        let slots = (0..<maxIcePerEdge).map { slot in
+            CGRect(
+                x: x,
+                y: visibleFrame.maxY - height * CGFloat(slot + 1),
+                width: 1,
+                height: height
+            )
+        }
+        let newest = safeItems[2]
+        let newestSlot = slots.indices.min {
+            abs(slots[$0].maxY - newest.preferredTopY)
+                < abs(slots[$1].maxY - newest.preferredTopY)
+        } ?? 0
+        let remainingSlots = slots.indices.filter { $0 != newestSlot }
+        let olderItems = Array(safeItems.prefix(2))
+
+        func score(_ slotOrder: [Int]) -> CGFloat {
+            zip(olderItems, slotOrder).reduce(0) { partial, pair in
+                partial + abs(slots[pair.1].midY - preferred[pair.0.id]!.midY)
             }
         }
 
-        let slotTop: CGFloat
-        let slotBottom: CGFloat
-        if safeSlot == 0 {
-            slotTop = anchorTop
-            slotBottom = anchorTop - panelHeight
-        } else if safeSlot <= belowCount {
-            slotTop = anchorTop - panelHeight * CGFloat(safeSlot)
-            slotBottom = anchorTop - panelHeight * CGFloat(safeSlot + 1)
-        } else {
-            let aboveOffset = safeSlot - belowCount - 1
-            slotBottom = anchorTop + panelHeight * CGFloat(aboveOffset)
-            slotTop = slotBottom + panelHeight
+        let direct = remainingSlots
+        let reversed = Array(remainingSlots.reversed())
+        let olderSlotOrder = score(direct) <= score(reversed) ? direct : reversed
+        var result: [UUID: CGRect] = [newest.id: slots[newestSlot]]
+        for (item, slot) in zip(olderItems, olderSlotOrder) {
+            result[item.id] = slots[slot]
         }
-        let roundedTop = slotTop.rounded()
-        let roundedBottom = slotBottom.rounded()
-        let x: CGFloat
-        switch edge {
-        case .left:
-            x = screenFrame.minX
-        case .right:
-            x = screenFrame.maxX - width
-        case .top:
-            x = min(max(visibleFrame.midX - width / 2, visibleFrame.minX), visibleFrame.maxX - width)
-        }
-        return CGRect(
-            x: x,
-            y: roundedBottom,
-            width: width,
-            height: max(1, roundedTop - roundedBottom)
-        )
+        return result
     }
 
     static func panelFrame(

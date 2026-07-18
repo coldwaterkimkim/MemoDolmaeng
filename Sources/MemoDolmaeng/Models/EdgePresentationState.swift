@@ -29,6 +29,35 @@ enum EdgeIndexVisibilityState: Equatable {
     case dragging(UUID)
 }
 
+struct EdgeHotZoneID: Hashable {
+    let screenIdentifier: String
+    let displayID: UInt32?
+    let edge: EdgeDock
+
+    var interactiveSide: EdgeDock { edge.interactiveSide }
+}
+
+enum EdgeHotZoneToggleAction: Equatable {
+    case show(EdgeHotZoneID)
+    case hide
+    case move(EdgeHotZoneID)
+}
+
+enum EdgeHotZoneToggleResolver {
+    static func action(
+        visibleZone: EdgeHotZoneID?,
+        enteredZone: EdgeHotZoneID
+    ) -> EdgeHotZoneToggleAction {
+        guard let visibleZone else { return .show(enteredZone) }
+        return visibleZone == enteredZone ? .hide : .move(enteredZone)
+    }
+}
+
+enum MemoAdjacentDirection: Equatable {
+    case left
+    case right
+}
+
 struct EdgePresentationState: Equatable {
     var iceNoteIDs: [UUID]
     var focusedIceNoteID: UUID?

@@ -16,6 +16,9 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private var isUserResizing = false
     private var suppressResizePersistence = false
     private var resizeSuppressionGeneration = 0
+    private var canAddAdjacent = false
+    private var revealInputBuffer: NSTextView?
+    private var revealInputBaseContent = ""
 
     var noteID: UUID? { viewModel?.noteID }
     var onFold: (() -> Void)?
@@ -24,6 +27,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
     var onDidBecomeKey: ((UUID) -> Void)?
+    var onCreateAdjacent: ((MemoAdjacentDirection) -> Void)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -39,6 +43,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
+        panel.acceptsMouseMovedEvents = true
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         // The panel is born at its edge handle size. Expanded editor constraints
@@ -83,6 +88,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
+        canAddAdjacent: Bool,
         focusEditor shouldFocusEditor: Bool = true,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
@@ -90,6 +96,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         let motion = EdgeMotionPolicy.current
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
+        self.canAddAdjacent = canAddAdjacent
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
         let wasIntendedVisible = shouldBeVisible
@@ -172,7 +179,18 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
         window.alphaValue = motion.reduceMotion ? 0 : 1
         window.hasShadow = false
-        window.orderFrontRegardless()
+        if shouldFocusEditor {
+            // Transfer key-window ownership immediately so keystrokes during
+            // the reveal can never leak into the memo that spawned this one.
+            window.makeKeyAndOrderFront(nil)
+            if motion.animatesGeometry {
+                beginRevealInputCapture(in: window)
+            } else {
+                focusEditor(after: 0)
+            }
+        } else {
+            window.orderFrontRegardless()
+        }
         if !shouldFocusEditor { clearAutomaticFieldFocus() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = revealDuration
@@ -196,7 +214,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                     self.updateRootView()
                 }
                 if shouldFocusEditor {
-                    self.focusEditor(after: 0.01)
+                    self.finishRevealInputCaptureWhenReady(generation: generation)
                 } else {
                     self.clearAutomaticFieldFocus()
                 }
@@ -220,11 +238,20 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         updateRootView()
     }
 
+    func setCollapseTargetFrame(_ frame: CGRect) {
+        currentHandleFrame = frame
+    }
+
+    func flushPendingInput() {
+        flushRevealInputCapture()
+    }
+
     func fold(
         to handleFrame: CGRect? = nil,
         beforeOrderOut: (() -> Void)? = nil,
         completion: (() -> Void)? = nil
     ) {
+        flushRevealInputCapture()
         let motion = EdgeMotionPolicy.current
         if let handleFrame { currentHandleFrame = handleFrame }
         shouldBeVisible = false
@@ -270,6 +297,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     }
 
     func requestFold() {
+        flushRevealInputCapture()
         onFold?()
     }
 
@@ -323,12 +351,78 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
     }
 
-    private func focusEditor(after delay: TimeInterval, remainingAttempts: Int = 8) {
+    private func beginRevealInputCapture(in window: NSWindow) {
+        guard revealInputBuffer == nil,
+              let contentView = window.contentView
+        else { return }
+        let buffer = NSTextView(frame: CGRect(x: -2, y: -2, width: 1, height: 1))
+        buffer.isRichText = false
+        buffer.drawsBackground = false
+        buffer.alphaValue = 0.01
+        buffer.setAccessibilityElement(false)
+        revealInputBaseContent = viewModel?.content ?? ""
+        buffer.string = revealInputBaseContent
+        buffer.setSelectedRange(
+            NSRange(location: (revealInputBaseContent as NSString).length, length: 0)
+        )
+        contentView.addSubview(buffer)
+        revealInputBuffer = buffer
+        window.makeFirstResponder(buffer)
+    }
+
+    private func flushRevealInputCapture() {
+        guard let buffer = revealInputBuffer else { return }
+        window?.makeFirstResponder(nil)
+        let bufferedText = buffer.string
+        buffer.removeFromSuperview()
+        revealInputBuffer = nil
+        guard bufferedText != revealInputBaseContent else { return }
+        viewModel?.updateMarkdownContent(bufferedText)
+    }
+
+    private func finishRevealInputCaptureWhenReady(generation: Int) {
+        guard let buffer = revealInputBuffer else {
+            if window?.isKeyWindow == true {
+                focusEditor(after: 0.01, onlyWhileKey: true)
+            }
+            return
+        }
+        guard !buffer.hasMarkedText() else {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(20))
+                guard let self,
+                      self.shouldBeVisible,
+                      self.visibilityGeneration == generation
+                else { return }
+                self.finishRevealInputCaptureWhenReady(generation: generation)
+            }
+            return
+        }
+        let shouldTransferFocus = window?.isKeyWindow == true
+            && window?.firstResponder === buffer
+        flushRevealInputCapture()
+        if shouldTransferFocus {
+            focusEditor(after: 0.01, onlyWhileKey: true)
+        }
+    }
+
+    private func focusEditor(
+        after delay: TimeInterval,
+        remainingAttempts: Int = 8,
+        onlyWhileKey: Bool = false
+    ) {
         Task { @MainActor [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-            guard let self, self.shouldBeVisible else { return }
+            guard let self,
+                  self.shouldBeVisible,
+                  !onlyWhileKey || self.window?.isKeyWindow == true
+            else { return }
             if !self.focusEditor(), remainingAttempts > 1 {
-                self.focusEditor(after: 0.02, remainingAttempts: remainingAttempts - 1)
+                self.focusEditor(
+                    after: 0.02,
+                    remainingAttempts: remainingAttempts - 1,
+                    onlyWhileKey: onlyWhileKey
+                )
             }
         }
     }
@@ -388,6 +482,10 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             viewModel: viewModel,
             isBodyMounted: isBodyMounted,
             assetRootURL: assetRootURL,
+            canAddAdjacent: canAddAdjacent,
+            onCreateAdjacent: { [weak self] direction in
+                self?.onCreateAdjacent?(direction)
+            },
             onImageUpload: { [weak self] data, originalName in
                 guard let self,
                       let noteID = self.noteID,
