@@ -43,6 +43,14 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         XCTAssertEqual(workspace.presentationState.focusedIceNoteID, notes[3].id)
         XCTAssertTrue(notes.allSatisfy { store.note(withID: $0.id) != nil })
 
+        try await Task.sleep(for: .milliseconds(300))
+        let settledPanels = NSApp.windows
+            .filter { $0.title == "메모돌맹 메모" && $0.isVisible }
+            .sorted { $0.frame.minY > $1.frame.minY }
+        XCTAssertEqual(settledPanels.count, 3)
+        XCTAssertGreaterThanOrEqual(settledPanels[0].frame.minY, settledPanels[1].frame.maxY)
+        XCTAssertGreaterThanOrEqual(settledPanels[1].frame.minY, settledPanels[2].frame.maxY)
+
         for noteID in workspace.presentationState.iceNoteIDs {
             workspace.closeMemo(noteID: noteID)
         }
@@ -124,6 +132,92 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertNil(store.note(withID: note.id)?.panelSize)
         XCTAssertEqual(store.note(withID: note.id)?.updatedAt, updatedAt)
+    }
+
+    func testOpenAndFoldLeavePersistedBytesUnchanged() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let notesURL = directory.appendingPathComponent("notes.json")
+        let store = try NoteStore(persistenceURL: notesURL)
+        let note = try store.createNote(title: "원문 보존", content: "# 제목\n\n한글 본문 **굵게**")
+        let before = try Data(contentsOf: notesURL)
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.closeMemo(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(240))
+
+        XCTAssertEqual(try Data(contentsOf: notesURL), before)
+    }
+
+    func testRapidOpenCloseOpenSettlesToOneEditablePanel() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let note = try store.createNote(title: "빠른 전환", content: "본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        for _ in 0..<5 {
+            workspace.handleClick(noteID: note.id)
+            workspace.closeMemo(noteID: note.id)
+            workspace.handleClick(noteID: note.id)
+        }
+        try await Task.sleep(for: .milliseconds(320))
+
+        XCTAssertEqual(workspace.presentationState.iceNoteIDs, [note.id])
+        let visiblePanels = NSApp.windows.filter {
+            $0.title == "메모돌맹 메모" && $0.isVisible
+        }
+        XCTAssertEqual(visiblePanels.count, 1)
+        XCTAssertEqual(visiblePanels.first?.alphaValue, 1)
+
+        workspace.closeMemo(noteID: note.id)
+        try await Task.sleep(for: .milliseconds(240))
+    }
+
+    func testPanelGeometryNeverReversesDuringOpenAndFold() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let note = try store.createNote(title: "모션 검증", content: "본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: note.id)
+        let identifier = NSUserInterfaceItemIdentifier("memo-panel-\(note.id.uuidString)")
+        let panel = try XCTUnwrap(NSApp.windows.first { $0.identifier == identifier })
+        var openingFrames: [CGRect] = []
+        for _ in 0..<18 {
+            openingFrames.append(panel.frame)
+            try await Task.sleep(for: .milliseconds(16))
+        }
+
+        for (previous, next) in zip(openingFrames, openingFrames.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(next.width + 1, previous.width)
+            XCTAssertGreaterThanOrEqual(next.height + 1, previous.height)
+        }
+
+        workspace.closeMemo(noteID: note.id)
+        var foldingFrames: [CGRect] = []
+        for _ in 0..<16 {
+            foldingFrames.append(panel.frame)
+            try await Task.sleep(for: .milliseconds(16))
+        }
+
+        for (previous, next) in zip(foldingFrames, foldingFrames.dropFirst()) {
+            XCTAssertLessThanOrEqual(next.width, previous.width + 1)
+            XCTAssertLessThanOrEqual(next.height, previous.height + 1)
+        }
+        XCTAssertFalse(panel.isVisible)
     }
 
     func testIndexClickDoesNotSelectTheTitleField() async throws {

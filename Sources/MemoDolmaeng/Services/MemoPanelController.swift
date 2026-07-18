@@ -80,6 +80,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
     ) {
+        let motion = EdgeMotionPolicy.current
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
         let previousNoteID = viewModel?.noteID
@@ -97,6 +98,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             viewModel?.sync(note: note)
         }
         updateRootView()
+        window?.identifier = NSUserInterfaceItemIdentifier("memo-panel-\(note.id.uuidString)")
 
         if let panel = window as? EdgeMemoPanel {
             let bus = MemoMarkdownBus(documentID: note.id)
@@ -114,37 +116,57 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             window.hasShadow = true
             configureWindowSizeConstraints()
             if window.frame != currentBodyFrame {
-                suppressResizePersistence(for: EdgeLayoutEngine.panelSwitchDuration)
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = EdgeLayoutEngine.panelSwitchDuration
-                    context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-                    window.animator().setFrame(currentBodyFrame, display: true)
+                suppressResizePersistence(
+                    for: motion.animatesGeometry
+                        ? EdgeLayoutEngine.panelSwitchDuration
+                        : motion.fadeDuration(EdgeLayoutEngine.panelSwitchDuration)
+                )
+                if motion.animatesGeometry {
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
+                        context.timingFunction = motion.timingFunction(.reveal)
+                        window.animator().setFrame(currentBodyFrame, display: true)
+                    }
+                } else {
+                    window.setFrame(currentBodyFrame, display: true)
                 }
             }
             if shouldFocusEditor {
-                focusEditor(after: isSwitchingNotes ? EdgeLayoutEngine.panelSwitchDuration : 0.12)
+                let delay = isSwitchingNotes
+                    ? motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
+                    : (motion.reduceMotion ? 0 : 0.12)
+                focusEditor(after: delay)
             } else {
                 clearAutomaticFieldFocus()
             }
             return
         }
 
-        suppressResizePersistence(for: transitionDuration(EdgeLayoutEngine.panelRevealDuration))
+        let revealDuration = motion.animatesGeometry
+            ? motion.geometryDuration(EdgeLayoutEngine.panelRevealDuration)
+            : motion.fadeDuration(EdgeLayoutEngine.panelRevealDuration)
+        suppressResizePersistence(for: revealDuration)
         allowTransitionSizing()
-        window.setFrame(currentHandleFrame, display: false)
+        window.setFrame(motion.animatesGeometry ? currentHandleFrame : currentBodyFrame, display: false)
+        window.alphaValue = motion.reduceMotion ? 0 : 1
         window.hasShadow = false
         window.orderFrontRegardless()
         if !shouldFocusEditor { clearAutomaticFieldFocus() }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = transitionDuration(EdgeLayoutEngine.panelRevealDuration)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-            window.animator().setFrame(currentBodyFrame, display: true)
+            context.duration = revealDuration
+            context.timingFunction = motion.timingFunction(.reveal)
+            if motion.animatesGeometry {
+                window.animator().setFrame(currentBodyFrame, display: true)
+            } else {
+                window.animator().alphaValue = 1
+            }
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self,
                       self.shouldBeVisible,
                       self.visibilityGeneration == generation
                 else { return }
+                window.alphaValue = 1
                 self.configureWindowSizeConstraints()
                 window.hasShadow = true
                 if shouldFocusEditor {
@@ -177,6 +199,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         beforeOrderOut: (() -> Void)? = nil,
         completion: (() -> Void)? = nil
     ) {
+        let motion = EdgeMotionPolicy.current
         if let handleFrame { currentHandleFrame = handleFrame }
         shouldBeVisible = false
         visibilityGeneration += 1
@@ -187,12 +210,19 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
 
         window.hasShadow = false
-        suppressResizePersistence(for: transitionDuration(EdgeLayoutEngine.panelHideDuration))
+        let hideDuration = motion.animatesGeometry
+            ? motion.geometryDuration(EdgeLayoutEngine.panelHideDuration)
+            : motion.fadeDuration(EdgeLayoutEngine.panelHideDuration)
+        suppressResizePersistence(for: hideDuration)
         allowTransitionSizing()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = transitionDuration(EdgeLayoutEngine.panelHideDuration)
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
-            window.animator().setFrame(currentHandleFrame, display: true)
+            context.duration = hideDuration
+            context.timingFunction = motion.timingFunction(.hide)
+            if motion.animatesGeometry {
+                window.animator().setFrame(currentHandleFrame, display: true)
+            } else {
+                window.animator().alphaValue = 0
+            }
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self,
@@ -201,6 +231,9 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                 else { return }
                 beforeOrderOut?()
                 window.orderOut(nil)
+                if !motion.animatesGeometry {
+                    window.setFrame(self.currentHandleFrame, display: false)
+                }
                 window.alphaValue = 1
                 window.hasShadow = true
                 completion?()
@@ -245,16 +278,13 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
 
     private func prepareContentSwitchTransition() {
         guard let contentView = window?.contentView else { return }
+        let motion = EdgeMotionPolicy.current
         contentView.wantsLayer = true
         let transition = CATransition()
         transition.type = .fade
-        transition.duration = EdgeLayoutEngine.contentSwitchDuration
-        transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        transition.duration = motion.fadeDuration(EdgeLayoutEngine.contentSwitchDuration)
+        transition.timingFunction = motion.timingFunction(.easeOut)
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
-    }
-
-    private func transitionDuration(_ duration: TimeInterval) -> TimeInterval {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.08 : duration
     }
 
     private func focusEditor(after delay: TimeInterval) {

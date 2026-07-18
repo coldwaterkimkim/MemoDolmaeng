@@ -26,6 +26,8 @@ struct UnifiedEdgeMemoSurfaceView: View {
 
 struct EdgeMemoPanelView: View {
     @ObservedObject var viewModel: NoteEditorViewModel
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let expansionProgress: CGFloat
     let assetRootURL: URL
@@ -33,6 +35,8 @@ struct EdgeMemoPanelView: View {
 
     var body: some View {
         let textColor = Color(nsColor: viewModel.textColor)
+        let increaseContrast = colorSchemeContrast == .increased
+        let effectiveOpacity = reduceTransparency ? 1 : viewModel.opacity
         let cornerRadius = EdgeLayoutEngine.handleCornerRadius
             + (EdgeLayoutEngine.panelCornerRadius - EdgeLayoutEngine.handleCornerRadius) * expansionProgress
 
@@ -40,7 +44,11 @@ struct EdgeMemoPanelView: View {
             titleBar(textColor: textColor)
 
             Rectangle()
-                .fill(textColor.opacity(0.18 * bodyRevealProgress))
+                .fill(
+                    textColor.opacity(
+                        (increaseContrast ? 0.38 : 0.18) * bodyRevealProgress
+                    )
+                )
                 .frame(height: 1)
 
             MarkdownEditorView(
@@ -58,12 +66,18 @@ struct EdgeMemoPanelView: View {
             .allowsHitTesting(bodyRevealProgress > 0.96)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(viewModel.color.bodyColor.opacity(viewModel.opacity))
+        .background(viewModel.color.bodyColor.opacity(effectiveOpacity))
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(
-                    textColor.opacity(0.28 - 0.08 * expansionProgress),
-                    lineWidth: 1.5 - 0.5 * expansionProgress
+                    textColor.opacity(
+                        increaseContrast
+                            ? 0.62
+                            : (0.28 - 0.08 * expansionProgress)
+                    ),
+                    lineWidth: increaseContrast
+                        ? 1.5
+                        : (1.5 - 0.5 * expansionProgress)
                 )
                 .allowsHitTesting(false)
         }
@@ -97,9 +111,15 @@ struct EdgeMemoPanelView: View {
             .padding(.horizontal, 10)
             .opacity(expandedTitleOpacity)
             .allowsHitTesting(expansionProgress > 0.96)
+            .accessibilityLabel("메모 제목")
+            .help("메모 제목")
         }
         .frame(height: interpolatedTitleBarHeight)
-        .background(textColor.opacity(0.035 * expansionProgress))
+        .background(
+            textColor.opacity(
+                (colorSchemeContrast == .increased ? 0.075 : 0.035) * expansionProgress
+            )
+        )
         .contentShape(Rectangle())
     }
 

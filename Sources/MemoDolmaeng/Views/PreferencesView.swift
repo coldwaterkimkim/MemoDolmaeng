@@ -17,7 +17,10 @@ struct PreferencesView: View {
         .padding(18)
         .frame(width: 540, height: 430)
         .onAppear {
-            if selectedNoteID == nil { selectedNoteID = workspace.activeNotes.first?.id }
+            reconcileSelectedNote()
+        }
+        .onChange(of: activeNoteIDs) { _, _ in
+            reconcileSelectedNote()
         }
     }
 
@@ -30,7 +33,7 @@ struct PreferencesView: View {
                 }
             }
 
-            Picker("기본 ICE 엣지", selection: $edgePreferences.defaultEdge) {
+            Picker("새 메모가 열릴 쪽", selection: $edgePreferences.defaultEdge) {
                 ForEach(EdgeDock.interactiveCases) { edge in Text(edge.title).tag(edge) }
             }
             .pickerStyle(.segmented)
@@ -51,55 +54,80 @@ struct PreferencesView: View {
 
     private var noteSettings: some View {
         Form {
-            Picker("활성 메모", selection: selectedNoteBinding) {
-                ForEach(workspace.activeNotes) { note in
-                    Text(note.displayTitle).tag(note.id as UUID?)
-                }
-            }
-
-            if let note = selectedNote {
-                TextField("인덱스 제목", text: Binding(
-                    get: { note.displayTitle },
-                    set: { workspace.updateTitle(noteID: note.id, title: $0) }
-                ))
-
-                if let panelSize = note.panelSize {
-                    LabeledContent("ICE 폭") {
-                        Text("\(Int(panelSize.width.rounded())) pt")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+            if workspace.activeNotes.isEmpty {
+                ContentUnavailableView("활성 메모가 없어", systemImage: "note.text")
+            } else {
+                Picker("활성 메모", selection: selectedNoteBinding) {
+                    ForEach(workspace.activeNotes) { note in
+                        Text(note.displayTitle).tag(note.id as UUID?)
                     }
                 }
 
-                LabeledContent("배경색") {
-                    HStack(spacing: 8) {
-                        ForEach(NoteColor.allCases, id: \.rawValue) { color in
-                            Button {
-                                workspace.updateAppearance(noteID: note.id, color: color)
-                            } label: {
-                                Circle()
-                                    .fill(color.bodyColor)
-                                    .overlay(Circle().stroke(note.color == color ? Color.accentColor : .secondary.opacity(0.35), lineWidth: note.color == color ? 3 : 1))
-                                    .frame(width: 22, height: 22)
-                            }
-                            .buttonStyle(.plain)
-                            .help(color.title)
+                if let note = selectedNote {
+                    TextField("인덱스 제목", text: Binding(
+                        get: { note.displayTitle },
+                        set: { workspace.updateTitle(noteID: note.id, title: $0) }
+                    ))
+
+                    if let panelSize = note.panelSize {
+                        LabeledContent("메모 폭") {
+                            Text("\(Int(panelSize.width.rounded())) pt")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
                         }
                     }
-                }
 
-                ColorPicker("글자색", selection: textColorBinding(note), supportsOpacity: false)
-                sliderRow(
-                    "투명도",
-                    value: Binding(
-                        get: { note.opacity },
-                        set: { workspace.updateAppearance(noteID: note.id, opacity: $0) }
-                    ),
-                    range: 0.4...1,
-                    suffix: "%"
-                )
-            } else {
-                ContentUnavailableView("활성 메모가 없어", systemImage: "note.text")
+                    LabeledContent("배경색") {
+                        HStack(spacing: 4) {
+                            ForEach(NoteColor.allCases, id: \.rawValue) { color in
+                                let isSelected = note.color == color
+                                Button {
+                                    workspace.updateAppearance(noteID: note.id, color: color)
+                                } label: {
+                                    ZStack {
+                                        Circle()
+                                            .fill(color.bodyColor)
+                                            .overlay {
+                                                Circle().stroke(
+                                                    isSelected ? Color.accentColor : .secondary.opacity(0.35),
+                                                    lineWidth: isSelected ? 3 : 1
+                                                )
+                                            }
+                                            .frame(width: 24, height: 24)
+
+                                        if isSelected {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(
+                                                    color == .black
+                                                        ? Color.white
+                                                        : Color.black.opacity(0.72)
+                                                )
+                                        }
+                                    }
+                                    .frame(width: 32, height: 32)
+                                    .contentShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(color.title)
+                                .accessibilityLabel("\(color.title) 배경색")
+                                .accessibilityValue(isSelected ? "선택됨" : "선택 안 됨")
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                            }
+                        }
+                    }
+
+                    ColorPicker("글자색", selection: textColorBinding(note), supportsOpacity: false)
+                    sliderRow(
+                        "투명도",
+                        value: Binding(
+                            get: { note.opacity },
+                            set: { workspace.updateAppearance(noteID: note.id, opacity: $0) }
+                        ),
+                        range: 0.4...1,
+                        suffix: "%"
+                    )
+                }
             }
         }
         .formStyle(.grouped)
@@ -107,7 +135,11 @@ struct PreferencesView: View {
 
     private var selectedNote: MemoNote? {
         guard let selectedNoteID else { return nil }
-        return workspace.note(withID: selectedNoteID)
+        return workspace.activeNotes.first(where: { $0.id == selectedNoteID })
+    }
+
+    private var activeNoteIDs: [UUID] {
+        workspace.activeNotes.map(\.id)
     }
 
     private var displayBinding: Binding<UInt32?> {
@@ -116,9 +148,19 @@ struct PreferencesView: View {
 
     private var selectedNoteBinding: Binding<UUID?> {
         Binding(
-            get: { selectedNoteID ?? workspace.activeNotes.first?.id },
+            get: {
+                if let selectedNoteID, activeNoteIDs.contains(selectedNoteID) {
+                    return selectedNoteID
+                }
+                return activeNoteIDs.first
+            },
             set: { selectedNoteID = $0 }
         )
+    }
+
+    private func reconcileSelectedNote() {
+        if let selectedNoteID, activeNoteIDs.contains(selectedNoteID) { return }
+        selectedNoteID = activeNoteIDs.first
     }
 
     private var fontSizeRow: some View {
@@ -149,6 +191,7 @@ struct PreferencesView: View {
 
     private func formatted(_ value: Double, range: ClosedRange<Double>, suffix: String) -> String {
         if suffix == "%" { return "\(Int((value * 100).rounded()))%" }
+        if suffix == "초", range.upperBound <= 1 { return String(format: "%.2f%@", value, suffix) }
         return String(format: "%.1f%@", value, suffix)
     }
 

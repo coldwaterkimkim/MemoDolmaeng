@@ -67,22 +67,30 @@ final class EdgeHandlePanelController: NSWindowController {
 
     func show(animated: Bool = true) {
         guard let window else { return }
+        let motion = EdgeMotionPolicy.current
         shouldBeVisible = true
         visibilityGeneration += 1
         let generation = visibilityGeneration
         if !window.isVisible {
-            window.setFrame(
-                EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge),
-                display: false
-            )
+            let initialFrame = motion.animatesGeometry
+                ? EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge)
+                : targetFrame
+            window.setFrame(initialFrame, display: false)
             window.alphaValue = 0
             window.orderFrontRegardless()
         }
         if animated {
+            if !motion.animatesGeometry {
+                window.setFrame(targetFrame, display: true)
+            }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = EdgeLayoutEngine.indexRevealDuration
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-                window.animator().setFrame(targetFrame, display: true)
+                context.duration = motion.animatesGeometry
+                    ? motion.geometryDuration(EdgeLayoutEngine.indexRevealDuration)
+                    : motion.fadeDuration(EdgeLayoutEngine.indexRevealDuration)
+                context.timingFunction = motion.timingFunction(.reveal)
+                if motion.animatesGeometry {
+                    window.animator().setFrame(targetFrame, display: true)
+                }
                 window.animator().alphaValue = 1
             } completionHandler: { [weak self] in
                 Task { @MainActor in
@@ -102,6 +110,7 @@ final class EdgeHandlePanelController: NSWindowController {
 
     func hide(animated: Bool = true) {
         guard let window else { return }
+        let motion = EdgeMotionPolicy.current
         shouldBeVisible = false
         visibilityGeneration += 1
         let generation = visibilityGeneration
@@ -109,9 +118,13 @@ final class EdgeHandlePanelController: NSWindowController {
         if animated {
             let hiddenFrame = EdgeLayoutEngine.hiddenHandleFrame(for: targetFrame, edge: edge)
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = EdgeLayoutEngine.indexHideDuration
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
-                window.animator().setFrame(hiddenFrame, display: true)
+                context.duration = motion.animatesGeometry
+                    ? motion.geometryDuration(EdgeLayoutEngine.indexHideDuration)
+                    : motion.fadeDuration(EdgeLayoutEngine.indexHideDuration)
+                context.timingFunction = motion.timingFunction(.hide)
+                if motion.animatesGeometry {
+                    window.animator().setFrame(hiddenFrame, display: true)
+                }
                 window.animator().alphaValue = 0
             } completionHandler: { [weak self] in
                 Task { @MainActor in
@@ -120,6 +133,7 @@ final class EdgeHandlePanelController: NSWindowController {
                           self.visibilityGeneration == generation
                     else { return }
                     window.orderOut(nil)
+                    window.setFrame(hiddenFrame, display: false)
                     window.alphaValue = 0
                 }
             }
@@ -151,14 +165,6 @@ final class EdgeHandlePanelController: NSWindowController {
             isDropTarget: isDropTarget
         )
         window?.title = note.displayTitle
-        if shouldBeVisible {
-            window?.setFrame(frame, display: true)
-        } else {
-            window?.setFrame(
-                EdgeLayoutEngine.hiddenHandleFrame(for: frame, edge: edge),
-                display: false
-            )
-        }
     }
 
     private static func fillColor(for note: MemoNote) -> NSColor {
@@ -185,6 +191,8 @@ private final class EdgeHandleContentView: NSView {
     private var edge: EdgeDock
     private var isSelected = false
     private var isDropTarget = false
+    private var hovering = false
+    private var pressed = false
     private var trackingAreaReference: NSTrackingArea?
     private var dragStartMouse: NSPoint?
     private var dragStartOrigin: NSPoint?
@@ -200,6 +208,17 @@ private final class EdgeHandleContentView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel(title)
+        setAccessibilityHelp("메모를 ICE로 열거나, 열려 있다면 인덱스로 접어.")
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayOptionsDidChange(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @available(*, unavailable)
@@ -225,7 +244,17 @@ private final class EdgeHandleContentView: NSView {
         self.isDropTarget = isDropTarget
         toolTip = title
         setAccessibilityLabel(title)
+        setAccessibilityValue(isSelected ? "열린 메모" : "접힌 메모")
         needsDisplay = true
+    }
+
+    @objc private func accessibilityDisplayOptionsDidChange(_ notification: Notification) {
+        needsDisplay = true
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
     }
 
     override func updateTrackingAreas() {
@@ -241,10 +270,22 @@ private final class EdgeHandleContentView: NSView {
         super.updateTrackingAreas()
     }
 
-    override func mouseEntered(with event: NSEvent) { onPointerChange?(true) }
-    override func mouseExited(with event: NSEvent) { onPointerChange?(false) }
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        needsDisplay = true
+        onPointerChange?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        if dragStartMouse == nil { pressed = false }
+        needsDisplay = true
+        onPointerChange?(false)
+    }
 
     override func mouseDown(with event: NSEvent) {
+        pressed = true
+        needsDisplay = true
         dragStartMouse = NSEvent.mouseLocation
         dragStartOrigin = window?.frame.origin
         didDrag = false
@@ -265,6 +306,8 @@ private final class EdgeHandleContentView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         defer {
+            pressed = false
+            needsDisplay = true
             dragStartMouse = nil
             dragStartOrigin = nil
         }
@@ -277,15 +320,32 @@ private final class EdgeHandleContentView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        let motion = EdgeMotionPolicy.current
         let path = handlePath(in: bounds.insetBy(dx: 0.5, dy: 0.5))
-        fillColor.setFill()
+        let effectiveFill = motion.reduceTransparency
+            ? fillColor.withAlphaComponent(1)
+            : fillColor
+        effectiveFill.setFill()
         path.fill()
+
+        if hovering || pressed {
+            textColor.withAlphaComponent(pressed ? 0.13 : 0.065).setFill()
+            path.fill()
+        }
 
         let stroke = isDropTarget
             ? NSColor.systemGreen
-            : textColor.withAlphaComponent(isSelected ? 0.34 : 0.18)
+            : textColor.withAlphaComponent(
+                motion.increaseContrast
+                    ? (isSelected || hovering ? 0.72 : 0.5)
+                    : (isSelected ? 0.42 : (hovering ? 0.3 : 0.18))
+            )
         stroke.setStroke()
-        path.lineWidth = isDropTarget ? 3 : (isSelected ? 2 : 1)
+        path.lineWidth = isDropTarget
+            ? (motion.increaseContrast ? 3.5 : 3)
+            : (isSelected || hovering
+                ? (motion.increaseContrast ? 2.5 : 2)
+                : (motion.increaseContrast ? 1.5 : 1))
         path.stroke()
 
         let font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)

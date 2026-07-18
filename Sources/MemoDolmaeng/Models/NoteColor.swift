@@ -19,14 +19,14 @@ enum NoteColor: String, Codable, CaseIterable, Equatable {
 
     var title: String {
         switch self {
-        case .black: "Black"
-        case .yellow: "Yellow"
-        case .blue: "Blue"
-        case .green: "Green"
-        case .pink: "Pink"
-        case .purple: "Purple"
-        case .gray: "Gray"
-        case .white: "White"
+        case .black: "검정"
+        case .yellow: "노랑"
+        case .blue: "파랑"
+        case .green: "초록"
+        case .pink: "분홍"
+        case .purple: "보라"
+        case .gray: "회색"
+        case .white: "흰색"
         }
     }
 

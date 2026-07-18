@@ -11,23 +11,23 @@ struct EdgeLayoutSnapshot: Equatable {
 enum EdgeLayoutEngine {
     static let sideHandleHeight: CGFloat = 26
     static let topHandleHeight: CGFloat = 26
-    static let groupGap: CGFloat = 6
+    static let groupGap: CGFloat = 7
     static let mergeDistance: CGFloat = 12
     static let edgeDropDistance: CGFloat = 28
     static let panelWidth: CGFloat = 340
     static let maxIcePerEdge = 3
     static let panelRevealDuration: TimeInterval = 0.22
     static let panelHideDuration: TimeInterval = 0.18
-    static let panelSwitchDuration: TimeInterval = 0.14
+    static let panelSwitchDuration: TimeInterval = 0.18
     static let contentSwitchDuration: TimeInterval = 0.10
     static let indexRevealDuration: TimeInterval = 0.16
     static let indexHideDuration: TimeInterval = 0.12
     static let indexSlideDistance: CGFloat = 14
-    static let panelCornerRadius: CGFloat = 10
+    static let panelCornerRadius: CGFloat = 12
     static let handleCornerRadius: CGFloat = 9
-    static let titleBarHeight: CGFloat = 40
+    static let titleBarHeight: CGFloat = 38
     static let edgeControlSize = CGSize(width: 34, height: 26)
-    static let deleteDropSize = CGSize(width: 76, height: 54)
+    static let deleteDropSize = CGSize(width: 116, height: 54)
 
     static func hotZoneFrame(
         edge: EdgeDock,

@@ -150,12 +150,12 @@ final class EdgeWorkspaceController: ObservableObject {
         if presentationState.isIce(noteID) {
             closeMemo(noteID: noteID)
         } else {
-            open(noteID: noteID, on: edge ?? launcherEdge)
+            open(noteID: noteID, on: edge ?? launcherEdge, focusEditor: true)
         }
     }
 
     func handleDoubleClick(noteID: UUID, on edge: EdgeDock? = nil) {
-        open(noteID: noteID, on: edge ?? launcherEdge)
+        open(noteID: noteID, on: edge ?? launcherEdge, focusEditor: true)
     }
 
     func toggleRecent() {
@@ -164,7 +164,7 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
         let candidate = preferences.lastNoteID.flatMap(note(withID:)) ?? orderedActiveNotes.first
-        if let candidate { open(noteID: candidate.id, on: preferences.defaultEdge) }
+        if let candidate { open(noteID: candidate.id, on: preferences.defaultEdge, focusEditor: true) }
     }
 
     func toggleMode() {
@@ -223,19 +223,19 @@ final class EdgeWorkspaceController: ObservableObject {
         let currentIndex = presentationState.currentNoteID.flatMap { id in ordered.firstIndex { $0.id == id } } ?? 0
         let next = (currentIndex + direction + ordered.count) % ordered.count
         let side = presentationState.currentNoteID.flatMap { iceEdges[$0] } ?? preferences.defaultEdge
-        open(noteID: ordered[next].id, on: side)
+        open(noteID: ordered[next].id, on: side, focusEditor: true)
     }
 
     func selectNote(at index: Int) {
         let ordered = orderedActiveNotes
         guard ordered.indices.contains(index) else { return }
         let side = presentationState.currentNoteID.flatMap { iceEdges[$0] } ?? preferences.defaultEdge
-        open(noteID: ordered[index].id, on: side)
+        open(noteID: ordered[index].id, on: side, focusEditor: true)
     }
 
     func openFromLibrary(noteID: UUID) {
         guard note(withID: noteID)?.isActive == true else { return }
-        open(noteID: noteID, on: preferences.defaultEdge)
+        open(noteID: noteID, on: preferences.defaultEdge, focusEditor: true)
     }
 
     func archive(noteID: UUID) {
@@ -366,10 +366,9 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         let edge = (requestedEdge ?? launcherEdge).interactiveSide
         let sameEdge = presentationState.iceNoteIDs.filter { iceEdges[$0] == edge }
-        if sameEdge.count >= EdgeLayoutEngine.maxIcePerEdge,
-           let oldest = sameEdge.first {
-            closeMemo(noteID: oldest)
-        }
+        let evictedID = sameEdge.count >= EdgeLayoutEngine.maxIcePerEdge
+            ? sameEdge.first
+            : nil
         collapsingNoteIDs.remove(noteID)
         launcherEdge = edge
         refreshLayoutSnapshot()
@@ -377,6 +376,13 @@ final class EdgeWorkspaceController: ObservableObject {
         guard let handleFrame = layoutSnapshot.handleFrames[noteID] else { return }
         let screen = targetScreen()
 
+        if let evictedID {
+            collapsingNoteIDs.insert(evictedID)
+            presentationState = EdgePresentationReducer.reduce(
+                state: presentationState,
+                action: .close(evictedID)
+            )
+        }
         presentationState = EdgePresentationReducer.reduce(
             state: presentationState,
             action: .open(noteID)
@@ -384,6 +390,7 @@ final class EdgeWorkspaceController: ObservableObject {
         iceEdges[noteID] = edge
         launcherEdge = edge
         indexVisibility = .hidden
+        handleControllers[noteID]?.hide(animated: false)
         refreshLayoutSnapshot()
         let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
         preferences.lastNoteID = noteID
@@ -401,8 +408,38 @@ final class EdgeWorkspaceController: ObservableObject {
         ) { [weak self] content in
             self?.handleContentChange(noteID: noteID, content: content)
         }
-        refreshLayout()
+        refreshLayout(excludingPanelID: noteID)
+        if let evictedID {
+            foldEvictedIce(noteID: evictedID, edge: edge, screen: screen)
+        }
         onPresentationChange?(true)
+    }
+
+    private func foldEvictedIce(noteID: UUID, edge: EdgeDock, screen: NSScreen) {
+        let targetFrame: CGRect
+        if let frame = layoutSnapshot.handleFrames[noteID] {
+            targetFrame = frame
+        } else if let note = note(withID: noteID) {
+            targetFrame = collapseTargetFrame(for: note, edge: edge, screen: screen)
+        } else {
+            targetFrame = .zero
+        }
+
+        let controller = panelControllers[noteID]
+        controller?.fold(to: targetFrame, completion: { [weak self, weak controller] in
+            guard let self else { return }
+            self.collapsingNoteIDs.remove(noteID)
+            if self.panelControllers[noteID] === controller {
+                self.panelControllers.removeValue(forKey: noteID)
+            }
+            self.iceEdges.removeValue(forKey: noteID)
+            self.refreshHandleSelection()
+        })
+        if controller == nil {
+            collapsingNoteIDs.remove(noteID)
+            iceEdges.removeValue(forKey: noteID)
+        }
+        finalizeTransientState(noteID: noteID)
     }
 
     private func panelController(for noteID: UUID) -> MemoPanelController {
@@ -535,13 +572,14 @@ final class EdgeWorkspaceController: ObservableObject {
         )
     }
 
-    private func refreshLayout() {
+    private func refreshLayout(excludingPanelID: UUID? = nil) {
         let screen = targetScreen()
         hotZoneController.update(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
         refreshLayoutSnapshot()
         refreshHandles()
 
         for noteID in presentationState.iceNoteIDs {
+            guard noteID != excludingPanelID else { continue }
             guard let note = note(withID: noteID),
                   let edge = iceEdges[noteID]
             else { continue }
@@ -729,6 +767,9 @@ final class EdgeWorkspaceController: ObservableObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard self.pointerInsideHotZones.contains(edge), self.draggingNoteID == nil else { return }
+                if self.launcherEdge != edge.interactiveSide {
+                    self.hideTrayImmediately()
+                }
                 self.launcherEdge = edge.interactiveSide
                 self.indexVisibility = .visible(edge)
                 self.refreshLayout()
@@ -791,6 +832,15 @@ final class EdgeWorkspaceController: ObservableObject {
         }
     }
 
+    private func hideTrayImmediately() {
+        for controller in handleControllers.values {
+            controller.hide(animated: false)
+        }
+        for controller in controlControllers.values {
+            controller.hide(animated: false)
+        }
+    }
+
     private func beginDrag(noteID: UUID) {
         revealTask?.cancel()
         hideTask?.cancel()
@@ -839,9 +889,14 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
         let frames = layoutSnapshot.handleFrames.values
-        guard let firstFrame = frames.first else { return }
+        guard let firstFrame = frames.first else {
+            indexVisibility = .visible(launcherEdge)
+            refreshLayout()
+            return
+        }
         let trayFrame = frames.dropFirst().reduce(firstFrame) { $0.union($1) }
         guard trayFrame.insetBy(dx: -80, dy: -20).contains(point) else {
+            indexVisibility = .visible(launcherEdge)
             refreshLayout()
             return
         }
@@ -882,9 +937,9 @@ final class EdgeWorkspaceController: ObservableObject {
         alert.alertStyle = .warning
         alert.messageText = "‘\(note.displayTitle)’ 메모를 삭제할까?"
         alert.informativeText = "본문과 메모에 복사된 이미지가 함께 영구 삭제되며 되돌릴 수 없어."
-        alert.addButton(withTitle: "삭제")
         alert.addButton(withTitle: "취소")
-        if alert.runModal() == .alertFirstButtonReturn {
+        alert.addButton(withTitle: "삭제").hasDestructiveAction = true
+        if alert.runModal() == .alertSecondButtonReturn {
             delete(noteID: noteID)
         } else {
             refreshLayout()

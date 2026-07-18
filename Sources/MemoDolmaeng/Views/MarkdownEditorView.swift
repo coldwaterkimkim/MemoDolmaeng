@@ -229,75 +229,202 @@ private struct NativeMarkdownToolbar: View {
     private var toolbarColor: Color { Color(nsColor: textColor) }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                Menu {
-                    ForEach(1...3, id: \.self) { level in
-                        Button("제목 \(level)") { bus.heading(level) }
-                    }
-                } label: {
-                    Image(systemName: "textformat.size")
-                        .foregroundStyle(toolbarColor)
-                        .frame(width: 26, height: 26)
+        HStack(spacing: 2) {
+            Menu {
+                ForEach(1...3, id: \.self) { level in
+                    Button("제목 \(level)") { bus.heading(level) }
                 }
-                .menuStyle(.borderlessButton)
-                .tint(toolbarColor)
-                .fixedSize()
-                .help("본문 및 제목")
-
-                toolbarButton("bold", help: "굵게", active: isBold) {
-                    bus.post(bus.applyBoldRequest)
-                }
-                toolbarButton("italic", help: "기울임", active: isItalic) {
-                    bus.post(bus.applyItalicRequest)
-                }
-                toolbarButton("strikethrough", help: "취소선") {
-                    bus.post(bus.applyStrikethroughRequest)
-                }
-
-                Rectangle()
-                    .fill(toolbarColor.opacity(0.24))
-                    .frame(width: 1, height: 16)
-
-                toolbarButton("list.bullet", help: "글머리표") {
-                    bus.post(bus.applyUnorderedListRequest)
-                }
-                toolbarButton("list.number", help: "번호 목록") {
-                    bus.post(bus.applyOrderedListRequest)
-                }
-                toolbarButton("text.quote", help: "인용") {
-                    bus.post(bus.applyBlockquoteRequest)
-                }
-                toolbarButton("chevron.left.forwardslash.chevron.right", help: "인라인 코드") {
-                    bus.post(bus.applyInlineCodeRequest)
-                }
-                toolbarButton("curlybraces.square", help: "코드 블록") {
-                    bus.post(bus.applyCodeBlockRequest)
-                }
-                toolbarButton("photo", help: "이미지 추가", action: onInsertImage)
+            } label: {
+                ToolbarMenuLabel(
+                    symbol: "textformat.size",
+                    accessibilityLabel: "제목 스타일",
+                    color: toolbarColor
+                )
             }
-            .padding(.horizontal, 8)
-            .foregroundStyle(toolbarColor)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .tint(toolbarColor)
+            .fixedSize()
+            .accessibilityLabel("제목 스타일")
+            .help("본문 또는 제목 1~3으로 바꾸기")
+
+            ToolbarIconButton(
+                symbol: "bold",
+                accessibilityLabel: "굵게",
+                color: toolbarColor,
+                isActive: isBold
+            ) {
+                bus.post(bus.applyBoldRequest)
+            }
+
+            ToolbarIconButton(
+                symbol: "italic",
+                accessibilityLabel: "기울임",
+                color: toolbarColor,
+                isActive: isItalic
+            ) {
+                bus.post(bus.applyItalicRequest)
+            }
+
+            toolbarDivider
+
+            ToolbarIconButton(
+                symbol: "list.bullet",
+                accessibilityLabel: "글머리표 목록",
+                color: toolbarColor
+            ) {
+                bus.post(bus.applyUnorderedListRequest)
+            }
+
+            ToolbarIconButton(
+                symbol: "list.number",
+                accessibilityLabel: "번호 목록",
+                color: toolbarColor
+            ) {
+                bus.post(bus.applyOrderedListRequest)
+            }
+
+            Spacer(minLength: 0)
+
+            ToolbarIconButton(
+                symbol: "photo",
+                accessibilityLabel: "이미지 추가",
+                color: toolbarColor,
+                action: onInsertImage
+            )
+
+            Menu {
+                Button {
+                    bus.post(bus.applyStrikethroughRequest)
+                } label: {
+                    Label("취소선", systemImage: "strikethrough")
+                }
+                Button {
+                    bus.post(bus.applyBlockquoteRequest)
+                } label: {
+                    Label("인용", systemImage: "text.quote")
+                }
+                Button {
+                    bus.post(bus.applyInlineCodeRequest)
+                } label: {
+                    Label("인라인 코드", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Button {
+                    bus.post(bus.applyCodeBlockRequest)
+                } label: {
+                    Label("코드 블록", systemImage: "curlybraces.square")
+                }
+            } label: {
+                ToolbarMenuLabel(
+                    symbol: "ellipsis",
+                    accessibilityLabel: "편집 도구 더보기",
+                    color: toolbarColor
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .tint(toolbarColor)
+            .fixedSize()
+            .accessibilityLabel("편집 도구 더보기")
+            .help("취소선, 인용, 코드 도구 보기")
         }
+        .padding(.horizontal, 6)
+        .foregroundStyle(toolbarColor)
+        .tint(toolbarColor)
         .frame(height: 36)
     }
 
-    private func toolbarButton(
-        _ symbol: String,
-        help: String,
-        active: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
+    private var toolbarDivider: some View {
+        Rectangle()
+            .fill(toolbarColor.opacity(0.2))
+            .frame(width: 1, height: 16)
+            .padding(.horizontal, 3)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct ToolbarIconButton: View {
+    let symbol: String
+    let accessibilityLabel: String
+    let color: Color
+    var isActive = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .foregroundStyle(toolbarColor)
-                .frame(width: 26, height: 26)
-                .background(active ? toolbarColor.opacity(0.16) : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .help(help)
+        .buttonStyle(
+            ToolbarIconButtonStyle(
+                color: color,
+                isHovered: isHovered,
+                isActive: isActive,
+                reduceMotion: reduceMotion
+            )
+        )
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .help(accessibilityLabel)
+    }
+}
+
+private struct ToolbarIconButtonStyle: ButtonStyle {
+    let color: Color
+    let isHovered: Bool
+    let isActive: Bool
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(color.opacity(configuration.isPressed ? 0.68 : 1))
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(color.opacity(backgroundOpacity(isPressed: configuration.isPressed)))
+            }
+            .overlay {
+                if isActive {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(color.opacity(0.18), lineWidth: 1)
+                }
+            }
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.94 : 1))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: isHovered)
+    }
+
+    private func backgroundOpacity(isPressed: Bool) -> Double {
+        if isPressed { return 0.22 }
+        if isActive { return isHovered ? 0.20 : 0.14 }
+        return isHovered ? 0.10 : 0
+    }
+}
+
+private struct ToolbarMenuLabel: View {
+    let symbol: String
+    let accessibilityLabel: String
+    let color: Color
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(color)
+            .frame(width: 30, height: 30)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(color.opacity(isHovered ? 0.10 : 0))
+            }
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+            .accessibilityLabel(accessibilityLabel)
     }
 }
 
