@@ -509,6 +509,78 @@ final class EdgeLayoutEngineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(frames[newest.id]).minY, sorted[1].minY, accuracy: 0.001)
     }
 
+    func testHorizontalLaneExpandsOnlyTheHoveredSeamWithoutChangingMemoSize() throws {
+        let ids = [UUID(), UUID(), UUID()]
+        let items = ids.map { EdgeHorizontalLaneLayoutItem(id: $0, requestedWidth: 280) }
+        let bounds = CGRect(x: 100, y: 0, width: 1_200, height: 700)
+        let base = EdgeLayoutEngine.horizontalLaneFrames(
+            items: items,
+            edge: .left,
+            horizontalBounds: bounds,
+            y: 200,
+            height: 240,
+            anchorID: ids[1],
+            anchorMinX: 500
+        )
+        let expanded = EdgeLayoutEngine.horizontalLaneFrames(
+            items: items,
+            edge: .left,
+            horizontalBounds: bounds,
+            y: 200,
+            height: 240,
+            anchorID: ids[1],
+            anchorMinX: 500,
+            expandedGapAfterID: ids[1]
+        )
+
+        let baseFrames = try ids.map { try XCTUnwrap(base[$0]) }
+        let expandedFrames = try ids.map { try XCTUnwrap(expanded[$0]) }
+        XCTAssertEqual(expandedFrames[2].minX - expandedFrames[1].maxX, EdgeLayoutEngine.laneExpandedGap, accuracy: 0.001)
+        XCTAssertEqual(expandedFrames[1].minX - expandedFrames[0].maxX, EdgeLayoutEngine.laneGap, accuracy: 0.001)
+        XCTAssertEqual(expandedFrames[0].minX - baseFrames[0].minX, -14, accuracy: 0.001)
+        XCTAssertEqual(expandedFrames[1].minX - baseFrames[1].minX, -14, accuracy: 0.001)
+        XCTAssertEqual(expandedFrames[2].minX - baseFrames[2].minX, 14, accuracy: 0.001)
+        for (before, after) in zip(baseFrames, expandedFrames) {
+            XCTAssertEqual(before.size, after.size)
+        }
+    }
+
+    func testHorizontalLaneUsesAvailableSideWhenHoveredSeamIsNearScreenEdge() throws {
+        let ids = [UUID(), UUID(), UUID()]
+        let items = ids.map { EdgeHorizontalLaneLayoutItem(id: $0, requestedWidth: 280) }
+        let bounds = CGRect(x: 100, y: 0, width: 900, height: 700)
+        let base = EdgeLayoutEngine.horizontalLaneFrames(
+            items: items,
+            edge: .right,
+            horizontalBounds: bounds,
+            y: 200,
+            height: 240,
+            anchorID: nil,
+            anchorMinX: nil
+        )
+        let expanded = EdgeLayoutEngine.horizontalLaneFrames(
+            items: items,
+            edge: .right,
+            horizontalBounds: bounds,
+            y: 200,
+            height: 240,
+            anchorID: nil,
+            anchorMinX: nil,
+            expandedGapAfterID: ids[1]
+        )
+
+        let baseLast = try XCTUnwrap(base[ids[2]])
+        let expandedLast = try XCTUnwrap(expanded[ids[2]])
+        let expandedMiddle = try XCTUnwrap(expanded[ids[1]])
+        XCTAssertEqual(expandedLast.maxX, bounds.maxX, accuracy: 0.001)
+        XCTAssertEqual(expandedLast.minX, baseLast.minX, accuracy: 0.001)
+        XCTAssertEqual(
+            expandedLast.minX - expandedMiddle.maxX,
+            EdgeLayoutEngine.laneExpandedGap,
+            accuracy: 0.001
+        )
+    }
+
     private func note(
         title: String,
         groupID: UUID,

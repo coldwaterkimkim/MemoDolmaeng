@@ -53,7 +53,7 @@ enum EdgeHotZoneToggleResolver {
     }
 }
 
-enum MemoAdjacentDirection: Equatable {
+enum MemoAdjacentDirection: Hashable {
     case left
     case right
 }

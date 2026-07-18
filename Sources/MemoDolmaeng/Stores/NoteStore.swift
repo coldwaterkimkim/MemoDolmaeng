@@ -189,6 +189,24 @@ final class NoteStore {
         }
     }
 
+    @discardableResult
+    func updateColor(noteIDs: Set<UUID>, color: NoteColor) -> Bool {
+        lastPersistenceError = nil
+        guard !noteIDs.isEmpty else { return true }
+        var updatedNotes = notes
+        var changed = false
+        let timestamp = now()
+        for index in updatedNotes.indices where noteIDs.contains(updatedNotes[index].id) {
+            guard updatedNotes[index].color != color else { continue }
+            updatedNotes[index].color = color
+            updatedNotes[index].updatedAt = timestamp
+            updatedNotes[index].normalize(fallbackIndex: index + 1)
+            changed = true
+        }
+        guard changed else { return true }
+        return commit(notes: updatedNotes, groups: edgeGroups, defaultGroupID: defaultGroupID)
+    }
+
     func updatePanelWidth(noteID: UUID, width: CGFloat) {
         mutate(noteID: noteID) { note in
             var updated = note

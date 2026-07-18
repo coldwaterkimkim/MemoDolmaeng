@@ -13,11 +13,20 @@ struct EdgeIceLaneLayoutItem: Equatable {
     let preferredTopY: CGFloat
 }
 
+struct EdgeHorizontalLaneLayoutItem: Equatable {
+    let id: UUID
+    let requestedWidth: CGFloat
+}
+
 enum EdgeLayoutEngine {
     static let sideHandleHeight: CGFloat = 26
     static let topHandleHeight: CGFloat = 26
     static let groupGap: CGFloat = 7
     static let laneGap: CGFloat = 8
+    static let laneExpandedGap: CGFloat = 36
+    static let adjacentInsertionOuterWidth: CGFloat = 26
+    static let adjacentInsertionDiameter: CGFloat = 22
+    static let adjacentInsertionMotionDuration: TimeInterval = 0.15
     static let mergeDistance: CGFloat = 12
     static let edgeDropDistance: CGFloat = 28
     static let panelWidth: CGFloat = 340
@@ -249,6 +258,107 @@ enum EdgeLayoutEngine {
         // here keeps all three panels exactly equal without the 1pt overlaps
         // produced by independently rounding fractional thirds.
         max(1, floor(visibleFrame.height / CGFloat(maxIcePerEdge)))
+    }
+
+    static func horizontalLaneFrames(
+        items: [EdgeHorizontalLaneLayoutItem],
+        edge: EdgeDock,
+        horizontalBounds: CGRect,
+        y: CGFloat,
+        height: CGFloat,
+        anchorID: UUID?,
+        anchorMinX: CGFloat?,
+        expandedGapAfterID: UUID? = nil
+    ) -> [UUID: CGRect] {
+        guard !items.isEmpty, horizontalBounds.width > 0 else { return [:] }
+
+        let widths = resolvedHorizontalLaneWidths(
+            items.map(\.requestedWidth),
+            availableWidth: horizontalBounds.width,
+            gap: laneGap
+        )
+        let baseTotalWidth = widths.reduce(0, +)
+            + laneGap * CGFloat(max(0, widths.count - 1))
+        let anchorIndex = anchorID.flatMap { id in items.firstIndex { $0.id == id } }
+        let widthBeforeAnchor = anchorIndex.map { index in
+            widths.prefix(index).reduce(0, +) + laneGap * CGFloat(index)
+        } ?? 0
+        let edgeOrigin = edge.interactiveSide == .right
+            ? horizontalBounds.maxX - baseTotalWidth
+            : horizontalBounds.minX
+        let requestedOrigin = anchorMinX.map { $0 - widthBeforeAnchor } ?? edgeOrigin
+        let originX = min(
+            horizontalBounds.maxX - baseTotalWidth,
+            max(horizontalBounds.minX, requestedOrigin)
+        )
+
+        var frames: [UUID: CGRect] = [:]
+        var x = originX
+        for (item, width) in zip(items, widths) {
+            frames[item.id] = CGRect(x: x, y: y, width: width, height: height)
+            x += width + laneGap
+        }
+
+        guard let expandedGapAfterID,
+              let expandedIndex = items.firstIndex(where: { $0.id == expandedGapAfterID }),
+              expandedIndex < items.count - 1
+        else { return frames }
+
+        let availableExtra = max(0, horizontalBounds.width - baseTotalWidth)
+        let extraGap = min(laneExpandedGap - laneGap, availableExtra)
+        guard extraGap > 0.001 else { return frames }
+
+        for index in items.indices {
+            let offset = index <= expandedIndex ? -extraGap / 2 : extraGap / 2
+            frames[items[index].id]?.origin.x += offset
+        }
+
+        let expandedMinX = frames.values.map(\.minX).min() ?? horizontalBounds.minX
+        let expandedMaxX = frames.values.map(\.maxX).max() ?? horizontalBounds.maxX
+        let correction: CGFloat
+        if expandedMinX < horizontalBounds.minX {
+            correction = horizontalBounds.minX - expandedMinX
+        } else if expandedMaxX > horizontalBounds.maxX {
+            correction = horizontalBounds.maxX - expandedMaxX
+        } else {
+            correction = 0
+        }
+        if abs(correction) > 0.001 {
+            for item in items {
+                frames[item.id]?.origin.x += correction
+            }
+        }
+        return frames
+    }
+
+    private static func resolvedHorizontalLaneWidths(
+        _ requested: [CGFloat],
+        availableWidth: CGFloat,
+        gap: CGFloat
+    ) -> [CGFloat] {
+        guard !requested.isEmpty else { return [] }
+        let gapWidth = gap * CGFloat(max(0, requested.count - 1))
+        let target = max(CGFloat(requested.count), availableWidth - gapWidth)
+        var widths = requested
+        var excess = widths.reduce(0, +) - target
+        while excess > 0.001 {
+            let shrinkable = widths.indices.filter { widths[$0] > MemoPanelSize.minimum.width + 0.001 }
+            guard !shrinkable.isEmpty else { break }
+            let share = excess / CGFloat(shrinkable.count)
+            var removed: CGFloat = 0
+            for index in shrinkable {
+                let reduction = min(share, widths[index] - MemoPanelSize.minimum.width)
+                widths[index] -= reduction
+                removed += reduction
+            }
+            guard removed > 0.001 else { break }
+            excess -= removed
+        }
+        if excess > 0.001 {
+            let share = excess / CGFloat(widths.count)
+            widths = widths.map { max(1, $0 - share) }
+        }
+        return widths
     }
 
     static func iceLaneFrames(

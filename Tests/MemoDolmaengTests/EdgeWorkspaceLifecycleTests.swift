@@ -96,11 +96,17 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         let first = try store.createNote(title: "첫 메모", content: "첫 본문")
         let second = try store.createNote(title: "둘째 메모", content: "둘째 본문")
         let third = try store.createNote(title: "셋째 메모", content: "셋째 본문")
-        let workspace = EdgeWorkspaceController(store: store)
+        let screen = try XCTUnwrap(NSScreen.main)
+        let preferencesSuite = "MemoDolmaengWorkspaceTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: preferencesSuite))
+        defer { defaults.removePersistentDomain(forName: preferencesSuite) }
+        let preferences = EdgePreferences(defaults: defaults)
+        preferences.defaultEdge = .right
+        preferences.targetDisplayID = screen.memoDisplayID
+        let workspace = EdgeWorkspaceController(store: store, preferences: preferences)
         workspace.start()
 
         workspace.handleClick(noteID: first.id)
-        let screen = try XCTUnwrap(NSScreen.main)
         let expectedSecondHandle = try XCTUnwrap(
             EdgeLayoutEngine.launcherLayout(
                 notes: [second, third],
@@ -390,6 +396,255 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(workspace.notes.map(\.id), [source.id])
         XCTAssertEqual(store.notes.map(\.id), [source.id])
+    }
+
+    func testAdjacentInsertionFromMiddleMemoKeepsExactHorizontalOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let source = try store.createNote(
+            title: "mother",
+            content: "기준 본문",
+            color: .pink
+        )
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: source.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+
+        workspace.createAdjacentMemo(to: source.id, direction: .right)
+        let tail = try XCTUnwrap(workspace.notes.first { $0.id != source.id })
+        workspace.createAdjacentMemo(to: source.id, direction: .right)
+        let middle = try XCTUnwrap(workspace.notes.first {
+            $0.id != source.id && $0.id != tail.id
+        })
+        try await Task.sleep(for: .milliseconds(360))
+
+        let horizontalOrder = [source.id, middle.id, tail.id].sorted { lhs, rhs in
+            let leftWindow = NSApp.windows.first {
+                $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(lhs.uuidString)")
+            }
+            let rightWindow = NSApp.windows.first {
+                $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(rhs.uuidString)")
+            }
+            return (leftWindow?.frame.minX ?? 0) < (rightWindow?.frame.minX ?? 0)
+        }
+        XCTAssertEqual(horizontalOrder, [source.id, middle.id, tail.id])
+        XCTAssertTrue(
+            [source.id, middle.id, tail.id].allSatisfy {
+                workspace.note(withID: $0)?.color == .pink
+            }
+        )
+
+        [source.id, middle.id, tail.id].forEach { workspace.closeMemo(noteID: $0) }
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testHorizontalLaneUsesOneMotherColorAfterRecolorAndMotherCloses() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let mother = try store.createNote(
+            title: "mother",
+            content: "기준 본문",
+            color: .pink
+        )
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: mother.id, on: .right)
+        try await Task.sleep(for: .milliseconds(280))
+
+        workspace.createAdjacentMemo(to: mother.id, direction: .right)
+        let child = try XCTUnwrap(workspace.notes.first { $0.id != mother.id })
+        workspace.updateAppearance(noteID: child.id, color: .green)
+
+        XCTAssertEqual(workspace.note(withID: mother.id)?.color, .green)
+        XCTAssertEqual(workspace.note(withID: child.id)?.color, .green)
+        XCTAssertEqual(store.note(withID: mother.id)?.color, .green)
+
+        workspace.closeMemo(noteID: mother.id)
+        workspace.createAdjacentMemo(to: child.id, direction: .right)
+        let grandchild = try XCTUnwrap(workspace.notes.first {
+            $0.id != mother.id && $0.id != child.id
+        })
+
+        XCTAssertEqual(grandchild.color, .green)
+        XCTAssertEqual(workspace.note(withID: child.id)?.color, .green)
+        XCTAssertEqual(workspace.note(withID: mother.id)?.color, .green)
+
+        workspace.closeMemo(noteID: child.id)
+        workspace.closeMemo(noteID: grandchild.id)
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testHoveringAnInternalInsertionPanelExpandsAndRestoresOnlyItsGap() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let mother = try store.createNote(title: "mother", content: "기준 본문", color: .yellow)
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: mother.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.createAdjacentMemo(to: mother.id, direction: .right)
+        let child = try XCTUnwrap(workspace.notes.first { $0.id != mother.id })
+        try await Task.sleep(for: .milliseconds(320))
+
+        let insertionPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier?.rawValue.hasPrefix("adjacent-insertion-") == true
+                && $0.isVisible
+                && abs($0.frame.width - EdgeLayoutEngine.laneGap) <= 1
+        })
+        let insertionView = try XCTUnwrap(insertionPanel.contentView)
+        let entered = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .mouseMoved,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: insertionPanel.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 0,
+                pressure: 0
+            )
+        )
+        insertionView.mouseEntered(with: entered)
+        try await Task.sleep(for: .milliseconds(220))
+
+        let expandedWindows = try [mother.id, child.id]
+            .map { id in
+                try XCTUnwrap(NSApp.windows.first {
+                    $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(id.uuidString)")
+                })
+            }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        XCTAssertEqual(
+            expandedWindows[1].frame.minX - expandedWindows[0].frame.maxX,
+            EdgeLayoutEngine.laneExpandedGap,
+            accuracy: 1
+        )
+        XCTAssertEqual(insertionPanel.frame.width, EdgeLayoutEngine.laneExpandedGap, accuracy: 1)
+        XCTAssertEqual(expandedWindows[0].frame.height, expandedWindows[1].frame.height, accuracy: 0.001)
+
+        let exited = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .mouseMoved,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: insertionPanel.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 0,
+                pressure: 0
+            )
+        )
+        insertionView.mouseExited(with: exited)
+        try await Task.sleep(for: .milliseconds(340))
+
+        let restoredWindows = try [mother.id, child.id]
+            .map { id in
+                try XCTUnwrap(NSApp.windows.first {
+                    $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(id.uuidString)")
+                })
+            }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        XCTAssertEqual(
+            restoredWindows[1].frame.minX - restoredWindows[0].frame.maxX,
+            EdgeLayoutEngine.laneGap,
+            accuracy: 1
+        )
+
+        workspace.closeMemo(noteID: mother.id)
+        workspace.closeMemo(noteID: child.id)
+        try await Task.sleep(for: .milliseconds(300))
+    }
+
+    func testEscapeFromAnyHorizontalMemoClosesTheWholeLane() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let mother = try store.createNote(title: "mother", content: "기준 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: mother.id, on: .left)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.createAdjacentMemo(to: mother.id, direction: .right)
+        let child = try XCTUnwrap(workspace.notes.first { $0.id != mother.id })
+        try await Task.sleep(for: .milliseconds(320))
+
+        let childPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(child.id.uuidString)")
+        })
+        let escape = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: childPanel.windowNumber,
+                context: nil,
+                characters: "\u{1B}",
+                charactersIgnoringModifiers: "\u{1B}",
+                isARepeat: false,
+                keyCode: 53
+            )
+        )
+        XCTAssertTrue(childPanel.performKeyEquivalent(with: escape))
+        try await Task.sleep(for: .milliseconds(340))
+
+        XCTAssertTrue(workspace.presentationState.iceNoteIDs.isEmpty)
+        XCTAssertEqual(store.notes.map(\.id), [mother.id])
+        XCTAssertFalse(childPanel.isVisible)
+    }
+
+    func testCommandWFromAnyHorizontalMemoClosesTheWholeLane() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try NoteStore(persistenceURL: directory.appendingPathComponent("notes.json"))
+        let mother = try store.createNote(title: "mother", content: "기준 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+        workspace.handleClick(noteID: mother.id, on: .right)
+        try await Task.sleep(for: .milliseconds(280))
+        workspace.createAdjacentMemo(to: mother.id, direction: .right)
+        _ = try XCTUnwrap(workspace.notes.first { $0.id != mother.id })
+        try await Task.sleep(for: .milliseconds(320))
+
+        let motherPanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(mother.id.uuidString)")
+        })
+        let commandW = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: .command,
+                timestamp: 0,
+                windowNumber: motherPanel.windowNumber,
+                context: nil,
+                characters: "w",
+                charactersIgnoringModifiers: "w",
+                isARepeat: false,
+                keyCode: KeyboardShortcuts.KeyCode.w
+            )
+        )
+        XCTAssertTrue(motherPanel.performKeyEquivalent(with: commandW))
+        try await Task.sleep(for: .milliseconds(340))
+
+        XCTAssertTrue(workspace.presentationState.iceNoteIDs.isEmpty)
+        XCTAssertEqual(store.notes.map(\.id), [mother.id])
+        XCTAssertFalse(motherPanel.isVisible)
     }
 
     func testTrayCreateDoesNotReuseAnOpenAdjacentDraft() async throws {

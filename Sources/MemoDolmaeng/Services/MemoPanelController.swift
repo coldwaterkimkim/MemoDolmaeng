@@ -16,7 +16,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private var isUserResizing = false
     private var suppressResizePersistence = false
     private var resizeSuppressionGeneration = 0
-    private var canAddAdjacent = false
     private var revealInputBuffer: NSTextView?
     private var revealInputBaseContent = ""
 
@@ -27,7 +26,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
     var onDidBecomeKey: ((UUID) -> Void)?
-    var onCreateAdjacent: ((MemoAdjacentDirection) -> Void)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -88,7 +86,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        canAddAdjacent: Bool,
         focusEditor shouldFocusEditor: Bool = true,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
@@ -96,7 +93,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         let motion = EdgeMotionPolicy.current
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
-        self.canAddAdjacent = canAddAdjacent
         let previousNoteID = viewModel?.noteID
         let wasVisible = window?.isVisible == true
         let wasIntendedVisible = shouldBeVisible
@@ -227,14 +223,25 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         handleFrame: CGRect,
         screenFrame: CGRect,
         visibleFrame: CGRect,
-        edge: EdgeDock
+        edge: EdgeDock,
+        animatedDuration: TimeInterval? = nil
     ) {
         currentBodyFrame = frame
         currentHandleFrame = handleFrame
         configureWindowSizeConstraints()
         guard let window, window.isVisible else { return }
-        suppressResizePersistence(for: 0.08)
-        window.setFrame(currentBodyFrame, display: true)
+        let motion = EdgeMotionPolicy.current
+        let duration = animatedDuration.map(motion.geometryDuration) ?? 0
+        suppressResizePersistence(for: max(0.08, duration))
+        if duration > 0 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = motion.timingFunction(.easeOut)
+                window.animator().setFrame(currentBodyFrame, display: true)
+            }
+        } else {
+            window.setFrame(currentBodyFrame, display: true)
+        }
         updateRootView()
     }
 
@@ -482,10 +489,6 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             viewModel: viewModel,
             isBodyMounted: isBodyMounted,
             assetRootURL: assetRootURL,
-            canAddAdjacent: canAddAdjacent,
-            onCreateAdjacent: { [weak self] direction in
-                self?.onCreateAdjacent?(direction)
-            },
             onImageUpload: { [weak self] data, originalName in
                 guard let self,
                       let noteID = self.noteID,

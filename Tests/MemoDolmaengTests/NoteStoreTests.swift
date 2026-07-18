@@ -369,6 +369,23 @@ final class NoteStoreTests: XCTestCase {
         }
     }
 
+    func testBulkColorUpdatePersistsEveryStoredHorizontalLaneMember() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let store = try NoteStore(persistenceURL: fixture.notesURL)
+        let mother = try store.createNote(title: "mother", content: "기준", color: .pink)
+        let child = try store.createNote(title: "child", content: "확장", color: .yellow)
+
+        XCTAssertTrue(store.updateColor(noteIDs: [mother.id, child.id], color: .green))
+        XCTAssertEqual(store.note(withID: mother.id)?.color, .green)
+        XCTAssertEqual(store.note(withID: child.id)?.color, .green)
+
+        let reloaded = try NoteStore(persistenceURL: fixture.notesURL)
+        XCTAssertEqual(reloaded.note(withID: mother.id)?.color, .green)
+        XCTAssertEqual(reloaded.note(withID: child.id)?.color, .green)
+    }
+
     func testInitializerThrowsForUnreadablePersistenceData() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }

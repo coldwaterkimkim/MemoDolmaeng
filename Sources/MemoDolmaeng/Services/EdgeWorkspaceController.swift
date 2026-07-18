@@ -5,11 +5,26 @@ import Foundation
 private struct RuntimeIceLane {
     let id: UUID
     let openedSequence: Int
+    let motherNoteID: UUID
     var noteIDs: [UUID]
     var edge: EdgeDock
     var displayID: UInt32?
     var anchorY: CGFloat
     var horizontalAnchorNoteID: UUID
+    var horizontalAnchorX: CGFloat?
+    var motherColor: NoteColor
+}
+
+private struct RuntimeAdjacentInsertionKey: Hashable {
+    let laneID: UUID
+    let sourceNoteID: UUID
+    let direction: MemoAdjacentDirection
+}
+
+private struct RuntimeAdjacentInsertionDescriptor {
+    let key: RuntimeAdjacentInsertionKey
+    let frame: CGRect
+    let accessibilityLabel: String
 }
 
 private struct ReconciledIceEviction {
@@ -34,6 +49,7 @@ final class EdgeWorkspaceController: ObservableObject {
     private let hotZoneController = EdgeHotZoneController()
     private let deleteDropZoneController = DeleteDropZoneController()
     private var panelControllers: [UUID: MemoPanelController] = [:]
+    private var adjacentInsertionControllers: [RuntimeAdjacentInsertionKey: AdjacentMemoInsertionPanelController] = [:]
     private var handleControllers: [UUID: EdgeHandlePanelController] = [:]
     private var controlControllers: [EdgeDock: EdgeControlPanelController] = [:]
     private var layoutSnapshot: EdgeLayoutSnapshot = .empty
@@ -47,6 +63,8 @@ final class EdgeWorkspaceController: ObservableObject {
     private var iceLanes: [UUID: RuntimeIceLane] = [:]
     private var iceLaneIDByNoteID: [UUID: UUID] = [:]
     private var nextIceLaneSequence = 0
+    private var hoveredAdjacentInsertion: RuntimeAdjacentInsertionKey?
+    private var adjacentHoverGeneration = 0
     private var launcherEdge: EdgeDock = .right
     private var interactionDisplayID: UInt32?
     private var launcherAnchorY: [EdgeDock: CGFloat] = [:]
@@ -146,19 +164,27 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func createAdjacentMemo(to sourceNoteID: UUID, direction: MemoAdjacentDirection) {
         guard presentationState.isIce(sourceNoteID),
-              canAddAdjacentMemo(to: sourceNoteID),
               let laneID = iceLaneIDByNoteID[sourceNoteID],
               var lane = iceLanes[laneID],
-              let sourceIndex = lane.noteIDs.firstIndex(of: sourceNoteID),
-              let sourceFrame = panelControllers[sourceNoteID]?.window?.frame
+              let sourceIndex = lane.noteIDs.firstIndex(of: sourceNoteID)
         else { return }
 
-        guard let sourceNote = note(withID: sourceNoteID) else { return }
-        let draft = makeDraftNote(inheritingColorFrom: sourceNote)
+        let screen = screen(for: lane)
+        guard canAddAdjacentMemo(in: lane, on: screen) else { return }
+        let sourceFrame = resolvedIcePanelFrames(
+            on: screen,
+            expandingHoveredGap: false
+        )[sourceNoteID] ?? panelControllers[sourceNoteID]?.window?.frame
+        guard let sourceFrame else { return }
+
+        hoveredAdjacentInsertion = nil
+        adjacentInsertionControllers.values.forEach { $0.resetHover() }
+        let draft = makeDraftNote(color: lane.motherColor)
         draftNotes[draft.id] = draft
         let insertionIndex = direction == .left ? sourceIndex : sourceIndex + 1
         lane.noteIDs.insert(draft.id, at: insertionIndex)
         lane.horizontalAnchorNoteID = sourceNoteID
+        lane.horizontalAnchorX = sourceFrame.minX
         iceLanes[laneID] = lane
         iceLaneIDByNoteID[draft.id] = laneID
         iceEdges[draft.id] = lane.edge
@@ -172,7 +198,6 @@ final class EdgeWorkspaceController: ObservableObject {
         reloadNotes()
         refreshLayoutSnapshot()
 
-        let screen = screen(for: lane)
         let finalFrame = resolvedIcePanelFrames(on: screen)[draft.id]
             ?? CGRect(
                 x: sourceFrame.minX,
@@ -195,7 +220,6 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: lane.edge,
-            canAddAdjacent: canAddAdjacentMemo(to: draft.id),
             focusEditor: true,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: draft.id, title: title)
@@ -210,7 +234,7 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func handleClick(noteID: UUID, on edge: EdgeDock? = nil) {
         if presentationState.isIce(noteID) {
-            closeMemo(noteID: noteID)
+            closeHorizontalLane(containing: noteID)
         } else {
             open(noteID: noteID, on: edge ?? launcherEdge, focusEditor: true)
         }
@@ -222,7 +246,7 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func toggleRecent() {
         if let noteID = presentationState.focusedIceNoteID {
-            closeMemo(noteID: noteID)
+            closeHorizontalLane(containing: noteID)
             return
         }
         let candidate = preferences.lastNoteID.flatMap(note(withID:)) ?? orderedNotes.first
@@ -231,11 +255,16 @@ final class EdgeWorkspaceController: ObservableObject {
 
     func toggleMode() {
         if let noteID = presentationState.focusedIceNoteID {
-            closeMemo(noteID: noteID)
+            closeHorizontalLane(containing: noteID)
         }
     }
 
     func closeMemo(noteID requestedNoteID: UUID? = nil) {
+        if requestedNoteID == nil,
+           let focusedID = presentationState.focusedIceNoteID {
+            closeHorizontalLane(containing: focusedID)
+            return
+        }
         guard let closingID = requestedNoteID
             ?? presentationState.focusedIceNoteID
         else { return }
@@ -275,6 +304,61 @@ final class EdgeWorkspaceController: ObservableObject {
             iceEdges.removeValue(forKey: closingID)
         }
         finalizeTransientState(noteID: closingID)
+        onPresentationChange?(presentationState.hasOpenPanels)
+    }
+
+    private func closeHorizontalLane(containing noteID: UUID) {
+        guard let laneID = iceLaneIDByNoteID[noteID],
+              let lane = iceLanes[laneID]
+        else {
+            closeMemo(noteID: noteID)
+            return
+        }
+        let closingIDs = lane.noteIDs.filter(presentationState.isIce)
+        guard closingIDs.count > 1 else {
+            closeMemo(noteID: noteID)
+            return
+        }
+
+        for closingID in closingIDs {
+            panelControllers[closingID]?.flushPendingInput()
+        }
+        guard closingIDs.allSatisfy({ prepareContentForClosure(noteID: $0) }) else { return }
+
+        launcherEdge = lane.edge
+        adjacentHoverGeneration += 1
+        hoveredAdjacentInsertion = nil
+        for closingID in closingIDs {
+            collapsingNoteIDs.insert(closingID)
+            presentationState = EdgePresentationReducer.reduce(
+                state: presentationState,
+                action: .close(closingID)
+            )
+        }
+        removeIceLane(laneID: laneID)
+        refreshLayout()
+        refreshHandleSelection()
+
+        for closingID in closingIDs {
+            let controller = panelControllers[closingID]
+            let targetFrame = layoutSnapshot.handleFrames[closingID]
+            controller?.fold(to: targetFrame, completion: { [weak self, weak controller] in
+                guard let self else { return }
+                self.collapsingNoteIDs.remove(closingID)
+                if self.panelControllers[closingID] === controller {
+                    self.panelControllers.removeValue(forKey: closingID)
+                }
+                self.iceEdges.removeValue(forKey: closingID)
+                self.refreshHandleSelection()
+            })
+            if controller == nil {
+                collapsingNoteIDs.remove(closingID)
+                iceEdges.removeValue(forKey: closingID)
+            }
+        }
+        for closingID in closingIDs {
+            finalizeTransientState(noteID: closingID)
+        }
         onPresentationChange?(presentationState.hasOpenPanels)
     }
 
@@ -327,8 +411,20 @@ final class EdgeWorkspaceController: ObservableObject {
         aspectRatio: MemoAspectRatio? = nil,
         opacity: Double? = nil
     ) {
+        var individualColor = color
+        if let color,
+           let laneID = runtimeLaneIDSharingColor(with: noteID) {
+            guard updateMotherColor(in: laneID, color: color) else { return }
+            individualColor = nil
+        }
+        guard individualColor != nil
+                || textColorHex != nil
+                || aspectRatio != nil
+                || opacity != nil
+        else { return }
+
         if var draft = draftNotes[noteID] {
-            if let color { draft.color = color }
+            if let individualColor { draft.color = individualColor }
             if let textColorHex { draft.textColorHex = textColorHex }
             if let aspectRatio { draft.aspectRatio = aspectRatio }
             if let opacity { draft.opacity = opacity }
@@ -337,7 +433,7 @@ final class EdgeWorkspaceController: ObservableObject {
         } else {
             store.updateAppearance(
                 noteID: noteID,
-                color: color,
+                color: individualColor,
                 textColorHex: textColorHex,
                 aspectRatio: aspectRatio,
                 opacity: opacity
@@ -415,11 +511,14 @@ final class EdgeWorkspaceController: ObservableObject {
         iceLanes[laneID] = RuntimeIceLane(
             id: laneID,
             openedSequence: nextIceLaneSequence,
+            motherNoteID: noteID,
             noteIDs: [noteID],
             edge: edge,
             displayID: screen.memoDisplayID,
             anchorY: handleFrame.maxY,
-            horizontalAnchorNoteID: noteID
+            horizontalAnchorNoteID: noteID,
+            horizontalAnchorX: nil,
+            motherColor: note.color
         )
         nextIceLaneSequence += 1
         iceLaneIDByNoteID[noteID] = laneID
@@ -442,7 +541,6 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            canAddAdjacent: canAddAdjacentMemo(to: noteID),
             focusEditor: focusEditor,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: noteID, title: title)
@@ -488,10 +586,7 @@ final class EdgeWorkspaceController: ObservableObject {
         if let controller = panelControllers[noteID] { return controller }
 
         let controller = MemoPanelController(assetRootURL: assetRootURL)
-        controller.onFold = { [weak self] in self?.closeMemo(noteID: noteID) }
-        controller.onCreateAdjacent = { [weak self] direction in
-            self?.createAdjacentMemo(to: noteID, direction: direction)
-        }
+        controller.onFold = { [weak self] in self?.closeHorizontalLane(containing: noteID) }
         controller.onImageUpload = { [weak self] requestedNoteID, data, originalName in
             guard let self else { throw CocoaError(.fileWriteUnknown) }
             return try self.importImage(
@@ -516,6 +611,170 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         panelControllers[noteID] = controller
         return controller
+    }
+
+    private func refreshAdjacentInsertionControls() {
+        var descriptors: [RuntimeAdjacentInsertionKey: RuntimeAdjacentInsertionDescriptor] = [:]
+        for lane in iceLanes.values {
+            let screen = screen(for: lane)
+            guard canAddAdjacentMemo(in: lane, on: screen) else { continue }
+            let frames = resolvedIcePanelFrames(on: screen)
+            let noteIDs = lane.noteIDs.filter {
+                presentationState.isIce($0) && frames[$0] != nil
+            }
+            guard let firstID = noteIDs.first,
+                  let lastID = noteIDs.last,
+                  let firstFrame = frames[firstID],
+                  let lastFrame = frames[lastID]
+            else { continue }
+
+            let outerWidth = EdgeLayoutEngine.adjacentInsertionOuterWidth
+            let leadingKey = RuntimeAdjacentInsertionKey(
+                laneID: lane.id,
+                sourceNoteID: firstID,
+                direction: .left
+            )
+            descriptors[leadingKey] = RuntimeAdjacentInsertionDescriptor(
+                key: leadingKey,
+                frame: CGRect(
+                    x: firstFrame.minX - outerWidth,
+                    y: firstFrame.minY,
+                    width: outerWidth,
+                    height: firstFrame.height
+                ),
+                accessibilityLabel: "왼쪽에 메모 추가"
+            )
+
+            for (index, sourceID) in noteIDs.enumerated() {
+                guard let sourceFrame = frames[sourceID] else { continue }
+                let key = RuntimeAdjacentInsertionKey(
+                    laneID: lane.id,
+                    sourceNoteID: sourceID,
+                    direction: .right
+                )
+                let descriptor: RuntimeAdjacentInsertionDescriptor
+                if index == noteIDs.count - 1 {
+                    descriptor = RuntimeAdjacentInsertionDescriptor(
+                        key: key,
+                        frame: CGRect(
+                            x: lastFrame.maxX,
+                            y: lastFrame.minY,
+                            width: outerWidth,
+                            height: lastFrame.height
+                        ),
+                        accessibilityLabel: "오른쪽에 메모 추가"
+                    )
+                } else if let nextFrame = frames[noteIDs[index + 1]] {
+                    descriptor = RuntimeAdjacentInsertionDescriptor(
+                        key: key,
+                        frame: CGRect(
+                            x: sourceFrame.maxX,
+                            y: sourceFrame.minY,
+                            width: max(1, nextFrame.minX - sourceFrame.maxX),
+                            height: min(sourceFrame.height, nextFrame.height)
+                        ),
+                        accessibilityLabel: "두 메모 사이에 추가"
+                    )
+                } else {
+                    continue
+                }
+                descriptors[key] = descriptor
+            }
+        }
+
+        let desiredKeys = Set(descriptors.keys)
+        for (key, controller) in adjacentInsertionControllers where !desiredKeys.contains(key) {
+            controller.close()
+            adjacentInsertionControllers.removeValue(forKey: key)
+        }
+        if let hoveredAdjacentInsertion, !desiredKeys.contains(hoveredAdjacentInsertion) {
+            self.hoveredAdjacentInsertion = nil
+        }
+
+        for descriptor in descriptors.values {
+            let controller: AdjacentMemoInsertionPanelController
+            if let existing = adjacentInsertionControllers[descriptor.key] {
+                controller = existing
+            } else {
+                let key = descriptor.key
+                controller = AdjacentMemoInsertionPanelController(
+                    accessibilityLabel: descriptor.accessibilityLabel,
+                    onInsert: { [weak self] in
+                        self?.createAdjacentMemo(
+                            to: key.sourceNoteID,
+                            direction: key.direction
+                        )
+                    },
+                    onPointerChange: { [weak self] inside in
+                        self?.handleAdjacentInsertionPointer(key: key, inside: inside)
+                    }
+                )
+                controller.window?.identifier = NSUserInterfaceItemIdentifier(
+                    "adjacent-insertion-\(key.laneID.uuidString)-\(key.sourceNoteID.uuidString)-\(key.direction == .left ? "left" : "right")"
+                )
+                adjacentInsertionControllers[key] = controller
+            }
+            controller.update(frame: descriptor.frame)
+        }
+    }
+
+    private func handleAdjacentInsertionPointer(
+        key: RuntimeAdjacentInsertionKey,
+        inside: Bool
+    ) {
+        guard let lane = iceLanes[key.laneID],
+              let sourceIndex = lane.noteIDs.firstIndex(of: key.sourceNoteID)
+        else { return }
+        let isInternalSeam = key.direction == .right && sourceIndex < lane.noteIDs.count - 1
+        guard isInternalSeam else { return }
+
+        if inside {
+            adjacentHoverGeneration += 1
+            guard hoveredAdjacentInsertion != key else { return }
+            let previousLaneID = hoveredAdjacentInsertion?.laneID
+            hoveredAdjacentInsertion = key
+            refreshHorizontalLanePresentation(
+                laneIDs: Set([previousLaneID, key.laneID].compactMap { $0 })
+            )
+        } else if hoveredAdjacentInsertion == key {
+            adjacentHoverGeneration += 1
+            let generation = adjacentHoverGeneration
+            let delay: Duration = EdgeMotionPolicy.current.reduceMotion
+                ? .zero
+                : .milliseconds(90)
+            Task { @MainActor [weak self] in
+                if delay > .zero { try? await Task.sleep(for: delay) }
+                guard let self,
+                      self.adjacentHoverGeneration == generation,
+                      self.hoveredAdjacentInsertion == key
+                else { return }
+                self.hoveredAdjacentInsertion = nil
+                self.refreshHorizontalLanePresentation(laneIDs: [key.laneID])
+            }
+        }
+    }
+
+    private func refreshHorizontalLanePresentation(laneIDs: Set<UUID>) {
+        for laneID in laneIDs {
+            guard let lane = iceLanes[laneID] else { continue }
+            let screen = screen(for: lane)
+            let frames = resolvedIcePanelFrames(on: screen)
+            for noteID in lane.noteIDs {
+                guard let note = note(withID: noteID),
+                      let frame = frames[noteID]
+                else { continue }
+                let handleFrame = collapseTargetFrame(for: note, edge: lane.edge, screen: screen)
+                panelControllers[noteID]?.reposition(
+                    frame: frame,
+                    handleFrame: handleFrame,
+                    screenFrame: screen.frame,
+                    visibleFrame: screen.visibleFrame,
+                    edge: lane.edge,
+                    animatedDuration: EdgeLayoutEngine.adjacentInsertionMotionDuration
+                )
+            }
+        }
+        refreshAdjacentInsertionControls()
     }
 
     private func prepareIndexHandoff(noteID: UUID) {
@@ -649,7 +908,6 @@ final class EdgeWorkspaceController: ObservableObject {
                 screenFrame: screen.frame,
                 visibleFrame: screen.visibleFrame,
                 edge: edge,
-                canAddAdjacent: canAddAdjacentMemo(to: noteID),
                 focusEditor: false,
                 onTitleChange: { [weak self] title in
                     self?.handlePanelTitleChange(noteID: noteID, title: title)
@@ -658,6 +916,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 self?.handleContentChange(noteID: noteID, content: content)
             }
         }
+        refreshAdjacentInsertionControls()
         for eviction in reconciledEvictions {
             foldEvictedIce(
                 noteID: eviction.noteID,
@@ -700,7 +959,10 @@ final class EdgeWorkspaceController: ObservableObject {
             )
     }
 
-    private func resolvedIcePanelFrames(on screen: NSScreen) -> [UUID: CGRect] {
+    private func resolvedIcePanelFrames(
+        on screen: NSScreen,
+        expandingHoveredGap: Bool = true
+    ) -> [UUID: CGRect] {
         var result: [UUID: CGRect] = [:]
         for edge in EdgeDock.interactiveCases {
             let laneIDs = orderedLaneIDs(on: edge, displayID: screen.memoDisplayID)
@@ -721,36 +983,41 @@ final class EdgeWorkspaceController: ObservableObject {
                 else { continue }
                 let laneNotes = lane.noteIDs.compactMap(note(withID:))
                 guard !laneNotes.isEmpty else { continue }
-                let widths = resolvedLaneWidths(
-                    laneNotes.map { requestedPanelWidth(for: $0, screen: screen) },
-                    availableWidth: screen.frame.width,
-                    gap: EdgeLayoutEngine.laneGap
+                let horizontalBounds = screen.visibleFrame.insetBy(
+                    dx: min(
+                        EdgeLayoutEngine.adjacentInsertionOuterWidth
+                            + EdgeHotZoneSpatialResolver.activationThickness,
+                        max(0, screen.visibleFrame.width / 4)
+                    ),
+                    dy: 0
                 )
-                let totalWidth = widths.reduce(0, +)
-                    + EdgeLayoutEngine.laneGap * CGFloat(max(0, widths.count - 1))
-                let anchorIndex = lane.noteIDs.firstIndex(of: lane.horizontalAnchorNoteID) ?? 0
-                let widthBeforeAnchor = widths.prefix(anchorIndex).reduce(0, +)
-                    + EdgeLayoutEngine.laneGap * CGFloat(anchorIndex)
-                let currentAnchorX = lane.noteIDs.count > 1
-                    ? panelControllers[lane.horizontalAnchorNoteID]?.window?.frame.minX
-                    : nil
-                let edgeOrigin = edge == .right ? screen.frame.maxX - totalWidth : screen.frame.minX
-                let desiredOrigin = currentAnchorX.map { $0 - widthBeforeAnchor } ?? edgeOrigin
-                let originX = min(
-                    screen.frame.maxX - totalWidth,
-                    max(screen.frame.minX, desiredOrigin)
-                )
-
-                var x = originX
-                for (note, width) in zip(laneNotes, widths) {
-                    result[note.id] = CGRect(
-                        x: x,
-                        y: verticalFrame.minY,
-                        width: width,
-                        height: verticalFrame.height
-                    )
-                    x += width + EdgeLayoutEngine.laneGap
+                let expandedGapAfterID: UUID?
+                if expandingHoveredGap,
+                   let hoveredAdjacentInsertion,
+                   hoveredAdjacentInsertion.laneID == laneID,
+                   hoveredAdjacentInsertion.direction == .right,
+                   let sourceIndex = lane.noteIDs.firstIndex(of: hoveredAdjacentInsertion.sourceNoteID),
+                   sourceIndex < lane.noteIDs.count - 1 {
+                    expandedGapAfterID = hoveredAdjacentInsertion.sourceNoteID
+                } else {
+                    expandedGapAfterID = nil
                 }
+                let horizontalFrames = EdgeLayoutEngine.horizontalLaneFrames(
+                    items: laneNotes.map {
+                        EdgeHorizontalLaneLayoutItem(
+                            id: $0.id,
+                            requestedWidth: requestedPanelWidth(for: $0, screen: screen)
+                        )
+                    },
+                    edge: edge,
+                    horizontalBounds: horizontalBounds,
+                    y: verticalFrame.minY,
+                    height: verticalFrame.height,
+                    anchorID: lane.horizontalAnchorNoteID,
+                    anchorMinX: lane.horizontalAnchorX,
+                    expandedGapAfterID: expandedGapAfterID
+                )
+                result.merge(horizontalFrames) { _, new in new }
             }
         }
         return result
@@ -1134,13 +1401,40 @@ final class EdgeWorkspaceController: ObservableObject {
         refreshLayout()
     }
 
-    private func makeDraftNote(inheritingColorFrom source: MemoNote? = nil) -> MemoNote {
+    private func runtimeLaneIDSharingColor(with noteID: UUID) -> UUID? {
+        if let laneID = iceLaneIDByNoteID[noteID] { return laneID }
+        return iceLanes.values.first(where: { $0.motherNoteID == noteID })?.id
+    }
+
+    @discardableResult
+    private func updateMotherColor(in laneID: UUID, color: NoteColor) -> Bool {
+        guard var lane = iceLanes[laneID] else { return false }
+        let relatedIDs = Set(lane.noteIDs + [lane.motherNoteID])
+        let storedIDs = Set(store.notes.map(\.id)).intersection(relatedIDs)
+        guard store.updateColor(noteIDs: storedIDs, color: color) else {
+            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
+            return false
+        }
+
+        for noteID in relatedIDs {
+            guard var draft = draftNotes[noteID] else { continue }
+            draft.color = color
+            draftNotes[noteID] = draft
+        }
+        lane.motherColor = color
+        iceLanes[laneID] = lane
+        reloadNotes()
+        refreshLayout()
+        return true
+    }
+
+    private func makeDraftNote(color: NoteColor? = nil) -> MemoNote {
         let timestamp = Date()
         let placementGroupID = store.defaultGroupID
         return MemoNote(
             title: "새 메모",
             content: "",
-            color: source?.color ?? NoteColor.randomMemoColor(
+            color: color ?? NoteColor.randomMemoColor(
                 excluding: notes.max(by: { $0.updatedAt < $1.updatedAt })?.color
             ),
             placement: MemoPlacement(
@@ -1169,6 +1463,9 @@ final class EdgeWorkspaceController: ObservableObject {
         guard let laneID = iceLaneIDByNoteID.removeValue(forKey: noteID),
               var lane = iceLanes[laneID]
         else { return }
+        if hoveredAdjacentInsertion?.laneID == laneID {
+            hoveredAdjacentInsertion = nil
+        }
         lane.noteIDs.removeAll { $0 == noteID }
         guard !lane.noteIDs.isEmpty else {
             iceLanes.removeValue(forKey: laneID)
@@ -1176,12 +1473,16 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         if lane.horizontalAnchorNoteID == noteID {
             lane.horizontalAnchorNoteID = lane.noteIDs[0]
+            lane.horizontalAnchorX = panelControllers[lane.noteIDs[0]]?.window?.frame.minX
         }
         iceLanes[laneID] = lane
     }
 
     private func removeIceLane(laneID: UUID) {
         guard let lane = iceLanes.removeValue(forKey: laneID) else { return }
+        if hoveredAdjacentInsertion?.laneID == laneID {
+            hoveredAdjacentInsertion = nil
+        }
         for noteID in lane.noteIDs {
             iceLaneIDByNoteID.removeValue(forKey: noteID)
         }
@@ -1194,11 +1495,7 @@ final class EdgeWorkspaceController: ObservableObject {
         )
     }
 
-    private func canAddAdjacentMemo(to noteID: UUID) -> Bool {
-        guard let laneID = iceLaneIDByNoteID[noteID],
-              let lane = iceLanes[laneID]
-        else { return false }
-        let screen = screen(for: lane)
+    private func canAddAdjacentMemo(in lane: RuntimeIceLane, on screen: NSScreen) -> Bool {
         let currentWidths = lane.noteIDs.compactMap(note(withID:)).map {
             requestedPanelWidth(for: $0, screen: screen)
         }
@@ -1206,37 +1503,12 @@ final class EdgeWorkspaceController: ObservableObject {
         let total = currentWidths.reduce(0, +)
             + requestedNewWidth
             + EdgeLayoutEngine.laneGap * CGFloat(currentWidths.count)
-        return total <= screen.frame.width + 0.001
-    }
-
-    private func resolvedLaneWidths(
-        _ requested: [CGFloat],
-        availableWidth: CGFloat,
-        gap: CGFloat
-    ) -> [CGFloat] {
-        guard !requested.isEmpty else { return [] }
-        let gapWidth = gap * CGFloat(max(0, requested.count - 1))
-        let target = max(CGFloat(requested.count), availableWidth - gapWidth)
-        var widths = requested
-        var excess = widths.reduce(0, +) - target
-        while excess > 0.001 {
-            let shrinkable = widths.indices.filter { widths[$0] > MemoPanelSize.minimum.width + 0.001 }
-            guard !shrinkable.isEmpty else { break }
-            let share = excess / CGFloat(shrinkable.count)
-            var removed: CGFloat = 0
-            for index in shrinkable {
-                let reduction = min(share, widths[index] - MemoPanelSize.minimum.width)
-                widths[index] -= reduction
-                removed += reduction
-            }
-            guard removed > 0.001 else { break }
-            excess -= removed
-        }
-        if excess > 0.001 {
-            let share = excess / CGFloat(widths.count)
-            widths = widths.map { max(1, $0 - share) }
-        }
-        return widths
+        let horizontalInset = min(
+            EdgeLayoutEngine.adjacentInsertionOuterWidth
+                + EdgeHotZoneSpatialResolver.activationThickness,
+            max(0, screen.visibleFrame.width / 4)
+        )
+        return total <= screen.visibleFrame.width - horizontalInset * 2 + 0.001
     }
 
     private func nextOrder(in groupID: UUID) -> Int {

@@ -14,8 +14,9 @@
 - 호버 미리보기가 없어서 인덱스 순서 변경이나 휴지통 드래그를 패널이 방해하지 않습니다.
 - 각 엣지는 세로 ICE 레인을 최대 3개까지 유지합니다. 하나와 둘일 때는 각 메모의 클릭 위치를 우선하고, 겹칠 때 기존 메모가 먼저 같은 쪽의 빈 공간으로 이동합니다. 그 이동이 부자연스럽거나 불가능할 때만 새 메모가 가장 가까운 유효 위치로 이동합니다.
 - ICE 높이는 현재 화면의 3분의 1로 고정되어 메모 수나 충돌 때문에 달라지지 않습니다. 세 번째 레인이 열릴 때만 전체가 3영역으로 정렬되고, 네 번째 레인을 열면 가장 오래된 레인이 자동으로 인덱스로 돌아갑니다.
-- 열린 메모의 왼쪽·오른쪽 중앙에 포인터를 두면 `+`가 나타납니다. 누른 방향에 mother 메모와 같은 색의 독립 메모가 하나 더 열리고, 실행 중에만 같은 가로 레인으로 묶입니다. 메모를 닫거나 앱을 다시 열면 각각 평범한 공용 인덱스 메모로 돌아갑니다.
-- `Esc`와 `Cmd+W`는 삭제가 아니라 접기입니다.
+- 가로 레인의 양 끝에는 메모 바깥쪽 `+`가 나타납니다. 두 메모 사이 경계에 포인터를 두면 두 메모가 부드럽게 벌어지고 가운데 `+`가 나타나며, 누르면 그 위치에 새 메모가 삽입됩니다.
+- 같은 가로 레인의 메모는 최초 mother 메모의 색을 하나의 공통 색으로 사용합니다. 어느 메모에서 색을 바꾸든 레인 전체에 반영되고, 새로 삽입한 메모도 그 색을 이어받습니다.
+- `Esc`와 `Cmd+W`는 삭제가 아니라 접기입니다. 가로 레인 중 하나에서 실행하면 해당 레인 전체가 함께 닫혀 공용 인덱스로 돌아갑니다.
 - 앱은 Dock 없이 메뉴 막대에 상주하며 모든 Space와 전체 화면 앱 위에서 접근할 수 있습니다.
 
 ## 공용 인덱스 트레이
@@ -78,7 +79,7 @@
 - `Cmd+Shift+M`: 최근 메모 열기 또는 현재 메모 접기, 시스템 전역
 - `Cmd+Shift+Up`, `Cmd+Shift+Down`: 열린 상태에서 이전 또는 다음 메모
 - `Cmd+1`~`Cmd+0`: 열린 상태에서 1~10번 메모로 전환
-- `Esc`, `Cmd+W`: 현재 메모 접기
+- `Esc`, `Cmd+W`: 현재 메모 접기. 가로 레인에서는 레인 전체 접기
 - `Cmd+N`: 새 임시 메모
 
 전역 단축키는 Carbon Hot Key API를 사용하므로 접근성 권한이 필요하지 않습니다.
@@ -116,8 +117,9 @@ v3를 처음 열 때 원본을 `Backups/notes-pre-edge-stack-v5-<timestamp>.json
 - `EdgeLayoutEngine`: 커서 기준 공용 트레이, 고정 높이의 1·2개 자유 배치와 3개 정렬, 가로 레인 프레임 계산
 - `EdgeMotionPolicy`: 일반 모션과 Reduce Motion·Transparency·Increase Contrast의 공통 정책
 - `EdgeHotZoneController`, `EdgeHandlePanelController`, `EdgeControlPanelController`: 숨김 핫존, 인덱스와 엣지 `+` 패널
+- `AdjacentMemoInsertionPanelController`: 가로 레인 양 끝과 메모 사이에서 독립적으로 hover·클릭되는 삽입 `+` 패널
 - `DeleteDropZoneController`: 인덱스를 끌 때만 나타나는 영구 삭제 드롭 영역
-- `MemoPanelController`, `UnifiedEdgeMemoSurfaceView`: 클릭 기준 자동 위치·고정 높이·가변 폭·좌우 인접 생성 동작을 적용하는 메모별 독립 네이티브 표면
+- `MemoPanelController`, `UnifiedEdgeMemoSurfaceView`: 클릭 기준 자동 위치·고정 높이·가변 폭을 적용하는 메모별 독립 네이티브 표면
 - `MarkdownEditorView`: TextKit 2 편집기, 네이티브 TopBar와 Markdown 명령 버스
 - `NoteStore`: v5 저장, 이전 버전 안전 백업·평탄화와 무제한 전역 인덱스 순서
 - `AttachmentService`, `MemoAssetSchemeHandler`: 이미지 복사, staged 삭제, 안전한 로딩
