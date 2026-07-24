@@ -14,10 +14,10 @@ final class StatusItemController: NSObject {
         recentItem = NSMenuItem(title: "최근 메모 열기", action: #selector(toggleRecent), keyEquivalent: "")
         super.init()
 
-        statusItem.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "메모돌맹")
-        statusItem.button?.toolTip = "메모돌맹"
+        statusItem.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: AppIdentity.displayName)
+        statusItem.button?.toolTip = AppIdentity.displayName
 
-        let menu = NSMenu(title: "메모돌맹")
+        let menu = NSMenu(title: AppIdentity.displayName)
         let newItem = NSMenuItem(title: "새 메모", action: #selector(createNote), keyEquivalent: "n")
         newItem.target = self
         menu.addItem(newItem)
@@ -31,7 +31,7 @@ final class StatusItemController: NSObject {
         menu.addItem(settingsItem)
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "메모돌맹 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "\(AppIdentity.displayName) 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
         statusItem.menu = menu
     }

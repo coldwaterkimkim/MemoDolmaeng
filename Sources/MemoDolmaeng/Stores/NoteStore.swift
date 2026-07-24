@@ -21,9 +21,18 @@ struct NoteStoreEnvelope: Codable, Equatable {
     }
 }
 
-enum NoteStoreError: Error, Equatable {
+enum NoteStoreError: Error, Equatable, LocalizedError {
     case emptyNoteCannotBePersisted
     case unsupportedSchemaVersion(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyNoteCannotBePersisted:
+            return "내용이 없는 메모는 저장할 수 없어."
+        case let .unsupportedSchemaVersion(version):
+            return "지원하지 않는 메모 데이터 버전이야: \(version)"
+        }
+    }
 }
 
 @MainActor

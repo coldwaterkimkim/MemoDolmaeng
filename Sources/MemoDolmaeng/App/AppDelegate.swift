@@ -13,10 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
 
+        var startupPhase = "메모 저장소 열기"
         do {
             let store = try makeStore()
             if let persistenceError = store.lastPersistenceError { throw persistenceError }
 
+            startupPhase = "작업 공간 구성"
             let edgePreferences = EdgePreferences.shared
             let workspace = EdgeWorkspaceController(store: store, preferences: edgePreferences)
             let settings = PreferencesWindowController(
@@ -52,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             workspace.start()
         } catch {
+            NSLog(
+                "MemoDolmaeng startup failed during \(startupPhase): "
+                    + String(reflecting: error)
+            )
             presentRecoveryAlert(error: error)
             NSApp.terminate(nil)
         }
@@ -70,13 +76,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showPreferences(_ sender: Any?) { preferencesWindowController?.show() }
 
     private func makeStore() throws -> NoteStore {
+        let persistenceURL: URL
         if let injectedDirectory = ProcessInfo.processInfo.environment["MEMODOLMAENG_DATA_DIR"],
            !injectedDirectory.isEmpty {
-            let url = URL(fileURLWithPath: injectedDirectory, isDirectory: true)
+            persistenceURL = URL(fileURLWithPath: injectedDirectory, isDirectory: true)
                 .appendingPathComponent("notes.json", isDirectory: false)
-            return try NoteStore(persistenceURL: url)
+        } else {
+            let applicationSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            )[0]
+            persistenceURL = applicationSupport
+                .appendingPathComponent("MemoDolmaeng", isDirectory: true)
+                .appendingPathComponent("notes.json", isDirectory: false)
         }
-        return try NoteStore()
+
+        NSLog("MemoDolmaeng loading store: \(persistenceURL.path)")
+        do {
+            let store = try NoteStore(persistenceURL: persistenceURL)
+            NSLog("MemoDolmaeng loaded \(store.notes.count) notes")
+            return store
+        } catch {
+            NSLog("MemoDolmaeng store load failed: \(String(reflecting: error))")
+            throw error
+        }
     }
 
     private func presentRecoveryAlert(error: Error) {
@@ -102,16 +125,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainMenu = NSMenu(title: "Main Menu")
 
         let appItem = NSMenuItem()
-        let appMenu = NSMenu(title: "메모돌맹")
+        let appMenu = NSMenu(title: AppIdentity.displayName)
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
-        appMenu.addItem(withTitle: "메모돌맹 정보", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "\(AppIdentity.displayName) 정보", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         let settings = NSMenuItem(title: "설정…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "메모돌맹 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "\(AppIdentity.displayName) 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "파일")

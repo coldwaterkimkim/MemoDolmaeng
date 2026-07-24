@@ -1,6 +1,6 @@
-# MemoDolmaeng
+# 울트라돌맹의포스트잇
 
-평소에는 화면에서 사라져 있다가 엣지에 포인터를 대면 메모 제목만 꺼내 보여주는 로컬 macOS 메모 앱입니다.
+평소에는 화면에서 사라져 있다가 엣지에 포인터를 대면 메모 제목만 꺼내 보여주는 로컬 macOS 메모 앱입니다. 사용자에게 보이는 앱 이름은 `울트라돌맹의포스트잇`이며, 기존 데이터 호환을 위해 내부 실행 파일·번들 ID·저장 경로의 `MemoDolmaeng` 이름은 유지합니다.
 
 ## 제품 흐름
 
@@ -135,9 +135,11 @@ swift build
 
 검증 스크립트는 로컬 앱 번들을 조립한 뒤 ad-hoc 서명과 무결성 검증을 먼저 통과시킨 다음 실행합니다. 외부 배포용 Developer ID 서명과 notarization은 별도 릴리스 단계입니다.
 
+`dist/`에는 실제 앱 본체인 `울트라돌맹의포스트잇.app` 하나만 유지합니다. 패키징 때마다 iCloud 작업 폴더의 `.build`를 재사용하지 않고 외부 임시 scratch에서 실행 파일을 처음부터 새로 빌드합니다. 서명된 최종 번들은 `~/Library/Caches/MemoDolmaeng/Build/`에 검증한 뒤 `dist` 앱의 루트 폴더는 보존하고 내부 내용만 갱신합니다. 따라서 Finder에서 바로 실행할 수 있고, 이전 데이터 스키마를 읽는 오래된 실행 파일이 새 앱에 섞일 수 없습니다. iCloud가 예전 `MemoDolmaeng*.app` 사본을 늦게 복원하면 빌드 스크립트가 해당 구버전만 복구 가능한 iCloud 휴지통으로 옮깁니다.
+
 격리 저장소 실행:
 
 ```bash
 MEMODOLMAENG_DATA_DIR=/tmp/memodolmaeng-qa \
-  ./dist/MemoDolmaeng.app/Contents/MacOS/MemoDolmaeng
+  ./dist/울트라돌맹의포스트잇.app/Contents/MacOS/MemoDolmaeng
 ```

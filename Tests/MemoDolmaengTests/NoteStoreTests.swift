@@ -4,6 +4,36 @@ import XCTest
 
 @MainActor
 final class NoteStoreTests: XCTestCase {
+    func testUnsupportedSchemaExplainsVersionWithoutTouchingSource() throws {
+        let fixture = try TemporaryStoreFixture()
+        defer { fixture.remove() }
+
+        let group = MemoEdgeGroup(edge: .right)
+        let note = MemoNote(
+            title: "미래 메모",
+            content: "현재 앱이 읽으면 안 되는 데이터",
+            placement: MemoPlacement(groupID: group.id, order: 0)
+        )
+        try fixture.writeEnvelope(
+            NoteStoreEnvelope(
+                schemaVersion: NoteStoreEnvelope.currentSchemaVersion + 1,
+                notes: [note],
+                edgeGroups: [group],
+                defaultGroupID: group.id
+            )
+        )
+        let originalData = try Data(contentsOf: fixture.notesURL)
+
+        XCTAssertThrowsError(try NoteStore(persistenceURL: fixture.notesURL)) { error in
+            XCTAssertEqual(
+                error as? NoteStoreError,
+                .unsupportedSchemaVersion(NoteStoreEnvelope.currentSchemaVersion + 1)
+            )
+            XCTAssertEqual(error.localizedDescription, "지원하지 않는 메모 데이터 버전이야: 6")
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.notesURL), originalData)
+    }
+
     func testLegacyMigrationFiltersEmptyNotesAndCreatesPackedDefaultGroup() throws {
         let fixture = try TemporaryStoreFixture()
         defer { fixture.remove() }

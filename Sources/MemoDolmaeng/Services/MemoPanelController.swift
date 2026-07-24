@@ -52,7 +52,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             height: CGFloat.greatestFiniteMagnitude
         )
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.title = "메모돌맹 메모"
+        panel.title = AppIdentity.memoWindowTitle
 
         super.init(window: panel)
         panel.delegate = self

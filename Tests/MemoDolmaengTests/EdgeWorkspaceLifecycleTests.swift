@@ -20,7 +20,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
 
         let panels = NSApp.windows
-            .filter { $0.title == "메모돌맹 메모" && $0.isVisible }
+            .filter { $0.title == AppIdentity.memoWindowTitle && $0.isVisible }
             .sorted { $0.frame.minY > $1.frame.minY }
         XCTAssertEqual(panels.count, 3)
         XCTAssertEqual(panels[0].frame.height, panels[1].frame.height, accuracy: 1)
@@ -45,7 +45,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
 
         try await Task.sleep(for: .milliseconds(300))
         let settledPanels = NSApp.windows
-            .filter { $0.title == "메모돌맹 메모" && $0.isVisible }
+            .filter { $0.title == AppIdentity.memoWindowTitle && $0.isVisible }
             .sorted { $0.frame.minY > $1.frame.minY }
         XCTAssertEqual(settledPanels.count, 3)
         XCTAssertGreaterThanOrEqual(settledPanels[0].frame.minY, settledPanels[1].frame.maxY)
@@ -73,7 +73,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
 
         XCTAssertEqual(workspace.presentationState.iceNoteIDs, [first.id, second.id])
         XCTAssertGreaterThanOrEqual(
-            NSApp.windows.filter { $0.title == "메모돌맹 메모" && $0.isVisible }.count,
+            NSApp.windows.filter { $0.title == AppIdentity.memoWindowTitle && $0.isVisible }.count,
             2
         )
         XCTAssertNotNil(store.note(withID: first.id))
@@ -254,7 +254,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
 
         XCTAssertEqual(workspace.presentationState.iceNoteIDs, [note.id])
         let visiblePanels = NSApp.windows.filter {
-            $0.title == "메모돌맹 메모" && $0.isVisible
+            $0.title == AppIdentity.memoWindowTitle && $0.isVisible
         }
         XCTAssertEqual(visiblePanels.count, 1)
         XCTAssertEqual(visiblePanels.first?.alphaValue, 1)
@@ -315,7 +315,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
 
         let panel = try XCTUnwrap(
-            NSApp.windows.last { $0.title == "메모돌맹 메모" && $0.isVisible }
+            NSApp.windows.last { $0.title == AppIdentity.memoWindowTitle && $0.isVisible }
         )
         XCTAssertFalse((panel.firstResponder as? NSTextView)?.isFieldEditor == true)
 

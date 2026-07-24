@@ -25,7 +25,7 @@ final class PreferencesWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "메모돌맹 설정"
+        window.title = AppIdentity.settingsWindowTitle
         window.contentView = hostingController.view
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
