@@ -160,6 +160,10 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
 
         XCTAssertEqual(workspace.presentationState.iceNoteIDs, [first.id, second.id])
         XCTAssertEqual(workspace.presentationState.focusedIceNoteID, first.id)
+        let indexOrder = store.notes
+            .sorted { $0.placement.order < $1.placement.order }
+            .map(\.id)
+        XCTAssertEqual(indexOrder.last, first.id)
 
         workspace.toggleRecent()
         XCTAssertEqual(workspace.presentationState.iceNoteIDs, [second.id])
@@ -191,6 +195,34 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         workspace.closeMemo(noteID: rightNote.id)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(Set(workspace.availableIndexNotes.map(\.id)), Set([leftNote.id, rightNote.id, availableNote.id]))
+    }
+
+    func testViewedMemoReturnsToBottomOfSharedIndexAndPersists() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let notesURL = directory.appendingPathComponent("notes.json")
+        let store = try NoteStore(persistenceURL: notesURL)
+        let first = try store.createNote(title: "첫째", content: "첫 본문")
+        let second = try store.createNote(title: "둘째", content: "둘째 본문")
+        let third = try store.createNote(title: "셋째", content: "셋째 본문")
+        let workspace = EdgeWorkspaceController(store: store)
+        workspace.start()
+
+        workspace.handleClick(noteID: first.id)
+        workspace.closeMemo(noteID: first.id)
+        try await Task.sleep(for: .milliseconds(280))
+
+        XCTAssertEqual(
+            workspace.availableIndexNotes.map(\.id),
+            [second.id, third.id, first.id]
+        )
+        let reloaded = try NoteStore(persistenceURL: notesURL)
+        XCTAssertEqual(
+            reloaded.notes.sorted { $0.placement.order < $1.placement.order }.map(\.id),
+            [second.id, third.id, first.id]
+        )
     }
 
     func testProgrammaticOpenAndFoldDoNotPersistAResize() async throws {
@@ -338,6 +370,18 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         XCTAssertEqual(workspace.edge(for: draft.id), .left)
         XCTAssertTrue(workspace.presentationState.isIce(draft.id))
         XCTAssertTrue(store.notes.isEmpty, "An untouched edge draft must not reach disk")
+        let panel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == NSUserInterfaceItemIdentifier("memo-panel-\(draft.id.uuidString)")
+        })
+        let immediateTitleInput = try XCTUnwrap(
+            panel.firstResponder as? NSTextView,
+            "The title input buffer must own the first keystroke during reveal"
+        )
+        XCTAssertEqual(immediateTitleInput.string, "새 메모")
+        XCTAssertEqual(
+            immediateTitleInput.selectedRange(),
+            NSRange(location: (immediateTitleInput.string as NSString).length, length: 0)
+        )
 
         workspace.closeMemo(noteID: draft.id)
         try await Task.sleep(for: .milliseconds(250))
@@ -676,7 +720,7 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
     }
 
-    func testAdjacentRevealBuffersTheFirstImmediateInput() async throws {
+    func testAdjacentRevealRoutesTheFirstImmediateInputToTitle() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -698,11 +742,11 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
             "즉시 입력",
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
-        XCTAssertTrue(workspace.prepareForTermination())
-
         try await Task.sleep(for: .milliseconds(320))
 
-        XCTAssertEqual(store.note(withID: child.id)?.content, "즉시 입력")
+        XCTAssertEqual(workspace.note(withID: child.id)?.title, "새 메모즉시 입력")
+        XCTAssertEqual(workspace.note(withID: child.id)?.content, "")
+        XCTAssertNil(store.note(withID: child.id), "A title-only draft must remain off disk")
         XCTAssertEqual(store.note(withID: source.id)?.content, "기준 본문")
         workspace.closeMemo(noteID: child.id)
         workspace.closeMemo(noteID: source.id)
@@ -768,4 +812,5 @@ final class EdgeWorkspaceLifecycleTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(300))
     }
+
 }

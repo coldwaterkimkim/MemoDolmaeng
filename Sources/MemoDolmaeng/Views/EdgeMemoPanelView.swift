@@ -119,17 +119,14 @@ struct EdgeMemoPanelView: View {
                 .help(viewModel.title)
                 .allowsHitTesting(false)
 
-            TextField(
-                "제목",
+            NativeMemoTitleField(
                 text: Binding(
                     get: { viewModel.title },
                     set: viewModel.updateTitle
-                )
+                ),
+                textColor: viewModel.textColor,
+                focusRequest: viewModel.titleFocusRequest
             )
-            .textFieldStyle(.plain)
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(textColor)
-            .lineLimit(1)
             .contentShape(Rectangle())
             .padding(.horizontal, 10)
             .opacity(expandedTitleOpacity)
@@ -163,4 +160,63 @@ struct EdgeMemoPanelView: View {
         EdgeMemoPanelLayoutPolicy.bodyRevealProgress(expansionProgress: expansionProgress)
     }
 
+}
+
+private struct NativeMemoTitleField: NSViewRepresentable {
+    @Binding var text: String
+    let textColor: NSColor
+    let focusRequest: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.delegate = context.coordinator
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.placeholderString = "제목"
+        field.font = .systemFont(ofSize: 14, weight: .semibold)
+        field.setAccessibilityLabel("메모 제목")
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        if field.stringValue != text { field.stringValue = text }
+        field.textColor = textColor
+        guard focusRequest > context.coordinator.handledFocusRequest else { return }
+        context.coordinator.handledFocusRequest = focusRequest
+        DispatchQueue.main.async { [weak field] in
+            guard let field, let window = field.window else { return }
+            window.makeKeyAndOrderFront(nil)
+            guard window.makeFirstResponder(field),
+                  let fieldEditor = window.firstResponder as? NSTextView
+            else { return }
+            fieldEditor.setSelectedRange(
+                NSRange(location: (fieldEditor.string as NSString).length, length: 0)
+            )
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var handledFocusRequest = 0
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+    }
 }

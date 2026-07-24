@@ -10,6 +10,7 @@ final class NoteEditorViewModel: ObservableObject {
     @Published private(set) var color: NoteColor
     @Published private(set) var opacity: Double
     @Published private(set) var textColor: NSColor
+    @Published private(set) var titleFocusRequest = 0
 
     private let onTitleChange: (String) -> Void
     private let onContentChange: (String) -> Void
@@ -39,6 +40,10 @@ final class NoteEditorViewModel: ObservableObject {
         guard content != markdown else { return }
         content = markdown
         onContentChange(markdown)
+    }
+
+    func requestTitleFocus() {
+        titleFocusRequest += 1
     }
 
     func sync(note: MemoNote) {

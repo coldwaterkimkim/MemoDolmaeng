@@ -3,6 +3,12 @@ import MarkdownEngine
 import QuartzCore
 import SwiftUI
 
+enum MemoPanelFocusTarget {
+    case none
+    case title
+    case editor
+}
+
 @MainActor
 final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private let assetRootURL: URL
@@ -17,7 +23,8 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     private var suppressResizePersistence = false
     private var resizeSuppressionGeneration = 0
     private var revealInputBuffer: NSTextView?
-    private var revealInputBaseContent = ""
+    private var revealInputBaseText = ""
+    private var revealInputTarget: MemoPanelFocusTarget = .none
 
     var noteID: UUID? { viewModel?.noteID }
     var onFold: (() -> Void)?
@@ -26,6 +33,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     var onSelectIndex: ((Int) -> Void)?
     var onResize: ((UUID, CGSize) -> Void)?
     var onDidBecomeKey: ((UUID) -> Void)?
+    var shouldAcceptAutomaticFocus: (() -> Bool)?
 
     init(assetRootURL: URL) {
         self.assetRootURL = assetRootURL
@@ -86,7 +94,7 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         edge: EdgeDock,
-        focusEditor shouldFocusEditor: Bool = true,
+        initialFocus: MemoPanelFocusTarget = .editor,
         onTitleChange: @escaping (String) -> Void,
         onContentChange: @escaping (String) -> Void
     ) {
@@ -149,13 +157,13 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                         ? motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
                         : 0,
                     generation: generation,
-                    focusEditor: shouldFocusEditor
+                    focusTarget: initialFocus
                 )
-            } else if shouldFocusEditor {
+            } else if initialFocus != .none {
                 let delay = isSwitchingNotes
                     ? motion.geometryDuration(EdgeLayoutEngine.panelSwitchDuration)
                     : (motion.reduceMotion ? 0 : 0.12)
-                focusEditor(after: delay)
+                focus(initialFocus, after: delay)
             } else {
                 clearAutomaticFieldFocus()
             }
@@ -175,19 +183,23 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
         window.alphaValue = motion.reduceMotion ? 0 : 1
         window.hasShadow = false
-        if shouldFocusEditor {
+        if initialFocus != .none {
             // Transfer key-window ownership immediately so keystrokes during
             // the reveal can never leak into the memo that spawned this one.
+            NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             if motion.animatesGeometry {
-                beginRevealInputCapture(in: window)
+                beginRevealInputCapture(in: window, target: initialFocus)
+                if initialFocus == .title {
+                    _ = applyFocus(.title)
+                }
             } else {
-                focusEditor(after: 0)
+                focus(initialFocus, after: 0)
             }
         } else {
             window.orderFrontRegardless()
         }
-        if !shouldFocusEditor { clearAutomaticFieldFocus() }
+        if initialFocus == .none { clearAutomaticFieldFocus() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = revealDuration
             context.timingFunction = motion.timingFunction(.reveal)
@@ -209,9 +221,13 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                     self.isBodyMounted = true
                     self.updateRootView()
                 }
-                if shouldFocusEditor {
-                    self.finishRevealInputCaptureWhenReady(generation: generation)
-                } else {
+                switch initialFocus {
+                case .editor, .title:
+                    self.finishRevealInputCaptureWhenReady(
+                        generation: generation,
+                        focusTarget: initialFocus
+                    )
+                case .none:
                     self.clearAutomaticFieldFocus()
                 }
             }
@@ -358,7 +374,10 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         contentView.layer?.add(transition, forKey: "memoContentSwitch")
     }
 
-    private func beginRevealInputCapture(in window: NSWindow) {
+    private func beginRevealInputCapture(
+        in window: NSWindow,
+        target: MemoPanelFocusTarget
+    ) {
         guard revealInputBuffer == nil,
               let contentView = window.contentView
         else { return }
@@ -367,10 +386,18 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         buffer.drawsBackground = false
         buffer.alphaValue = 0.01
         buffer.setAccessibilityElement(false)
-        revealInputBaseContent = viewModel?.content ?? ""
-        buffer.string = revealInputBaseContent
+        revealInputTarget = target
+        revealInputBaseText = switch target {
+        case .title:
+            viewModel?.title ?? ""
+        case .editor:
+            viewModel?.content ?? ""
+        case .none:
+            ""
+        }
+        buffer.string = revealInputBaseText
         buffer.setSelectedRange(
-            NSRange(location: (revealInputBaseContent as NSString).length, length: 0)
+            NSRange(location: (revealInputBaseText as NSString).length, length: 0)
         )
         contentView.addSubview(buffer)
         revealInputBuffer = buffer
@@ -383,14 +410,26 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         let bufferedText = buffer.string
         buffer.removeFromSuperview()
         revealInputBuffer = nil
-        guard bufferedText != revealInputBaseContent else { return }
-        viewModel?.updateMarkdownContent(bufferedText)
+        let target = revealInputTarget
+        revealInputTarget = .none
+        guard bufferedText != revealInputBaseText else { return }
+        switch target {
+        case .title:
+            viewModel?.updateTitle(bufferedText)
+        case .editor:
+            viewModel?.updateMarkdownContent(bufferedText)
+        case .none:
+            break
+        }
     }
 
-    private func finishRevealInputCaptureWhenReady(generation: Int) {
+    private func finishRevealInputCaptureWhenReady(
+        generation: Int,
+        focusTarget: MemoPanelFocusTarget
+    ) {
         guard let buffer = revealInputBuffer else {
             if window?.isKeyWindow == true {
-                focusEditor(after: 0.01, onlyWhileKey: true)
+                focus(focusTarget, after: 0.01, onlyWhileKey: true)
             }
             return
         }
@@ -401,19 +440,23 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
                       self.shouldBeVisible,
                       self.visibilityGeneration == generation
                 else { return }
-                self.finishRevealInputCaptureWhenReady(generation: generation)
+                self.finishRevealInputCaptureWhenReady(
+                    generation: generation,
+                    focusTarget: focusTarget
+                )
             }
             return
         }
-        let shouldTransferFocus = window?.isKeyWindow == true
-            && window?.firstResponder === buffer
+        let shouldTransferFocus = NSApp.isActive
+            && (shouldAcceptAutomaticFocus?() ?? true)
         flushRevealInputCapture()
         if shouldTransferFocus {
-            focusEditor(after: 0.01, onlyWhileKey: true)
+            focus(focusTarget, after: 0.01)
         }
     }
 
-    private func focusEditor(
+    private func focus(
+        _ target: MemoPanelFocusTarget,
         after delay: TimeInterval,
         remainingAttempts: Int = 8,
         onlyWhileKey: Bool = false
@@ -422,10 +465,12 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard let self,
                   self.shouldBeVisible,
+                  self.shouldAcceptAutomaticFocus?() ?? true,
                   !onlyWhileKey || self.window?.isKeyWindow == true
             else { return }
-            if !self.focusEditor(), remainingAttempts > 1 {
-                self.focusEditor(
+            if !self.applyFocus(target), remainingAttempts > 1 {
+                self.focus(
+                    target,
                     after: 0.02,
                     remainingAttempts: remainingAttempts - 1,
                     onlyWhileKey: onlyWhileKey
@@ -434,7 +479,11 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func mountBody(after delay: TimeInterval, generation: Int, focusEditor: Bool) {
+    private func mountBody(
+        after delay: TimeInterval,
+        generation: Int,
+        focusTarget: MemoPanelFocusTarget
+    ) {
         Task { @MainActor [weak self] in
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             guard let self,
@@ -443,8 +492,8 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
             else { return }
             self.isBodyMounted = true
             self.updateRootView()
-            if focusEditor {
-                self.focusEditor(after: 0.01)
+            if focusTarget != .none {
+                self.focus(focusTarget, after: 0.01)
             } else {
                 self.clearAutomaticFieldFocus()
             }
@@ -516,6 +565,52 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
     }
 
     @discardableResult
+    private func applyFocus(_ target: MemoPanelFocusTarget) -> Bool {
+        switch target {
+        case .none:
+            return true
+        case .title:
+            return focusTitle()
+        case .editor:
+            return focusEditor()
+        }
+    }
+
+    @discardableResult
+    private func focusTitle() -> Bool {
+        guard let window else { return false }
+        window.makeKeyAndOrderFront(nil)
+
+        if let fieldEditor = window.firstResponder as? NSTextView,
+           fieldEditor.isFieldEditor {
+            fieldEditor.setSelectedRange(
+                NSRange(location: (fieldEditor.string as NSString).length, length: 0)
+            )
+            return true
+        }
+
+        if let contentView = window.contentView,
+           let titleField = findTitleField(in: contentView),
+           window.makeFirstResponder(titleField),
+           let fieldEditor = window.firstResponder as? NSTextView,
+           fieldEditor.isFieldEditor {
+            fieldEditor.setSelectedRange(
+                NSRange(location: (fieldEditor.string as NSString).length, length: 0)
+            )
+            return true
+        }
+
+        viewModel?.requestTitleFocus()
+        if let fieldEditor = window.firstResponder as? NSTextView,
+           fieldEditor.isFieldEditor {
+            fieldEditor.setSelectedRange(
+                NSRange(location: (fieldEditor.string as NSString).length, length: 0)
+            )
+        }
+        return false
+    }
+
+    @discardableResult
     private func focusEditor() -> Bool {
         guard let contentView = window?.contentView,
               let textView = findTextView(in: contentView)
@@ -533,6 +628,16 @@ final class MemoPanelController: NSWindowController, NSWindowDelegate {
               fieldEditor.isFieldEditor
         else { return }
         window.makeFirstResponder(nil)
+    }
+
+    private func findTitleField(in view: NSView) -> NSTextField? {
+        if let textField = view as? NSTextField, textField.isEditable {
+            return textField
+        }
+        for subview in view.subviews {
+            if let textField = findTitleField(in: subview) { return textField }
+        }
+        return nil
     }
 
     private func findTextView(in view: NSView) -> NSTextView? {

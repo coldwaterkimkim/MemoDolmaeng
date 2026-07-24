@@ -73,6 +73,37 @@ final class EditorImageIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testCaretStaysVisibleWhenMovingBelowAndAboveTheViewport() async throws {
+        let longDocument = (1...80)
+            .map { "긴 메모 \($0): caret 자동 추적 확인" }
+            .joined(separator: "\n")
+        let fixture = try NativeEditorFixture(markdown: longDocument)
+        defer { fixture.close() }
+
+        let textView = try await fixture.textView()
+        fixture.window.makeKeyAndOrderFront(nil)
+        fixture.window.makeFirstResponder(textView)
+        textView.setSelectedRange(
+            NSRange(location: (textView.string as NSString).length, length: 0)
+        )
+        textView.insertText("\n마지막 한글 입력", replacementRange: textView.selectedRange())
+
+        try await waitUntil {
+            guard let scrollView = textView.enclosingScrollView else { return false }
+            return scrollView.contentView.bounds.minY > 0
+                && CaretVisibilityController.isCaretVisible(in: textView)
+        }
+        let bottomOffset = try XCTUnwrap(textView.enclosingScrollView).contentView.bounds.minY
+
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        try await waitUntil {
+            guard let scrollView = textView.enclosingScrollView else { return false }
+            return scrollView.contentView.bounds.minY < bottomOffset
+                && CaretVisibilityController.isCaretVisible(in: textView)
+        }
+    }
+
+    @MainActor
     func testFormattingCommandOnlyChangesItsDocument() async throws {
         let first = try NativeEditorFixture(markdown: "첫째")
         let second = try NativeEditorFixture(markdown: "둘째")

@@ -52,6 +52,7 @@ struct MarkdownEditorView: View {
                     ]
                 )
             )
+            .background(CaretVisibilityObserver())
         }
         .background(Color.clear)
         .onReceive(NotificationCenter.default.publisher(for: markdownBus.selectionBoldDidChange)) {
@@ -216,6 +217,241 @@ struct MarkdownEditorView: View {
     private static func isSafeExternalURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return ["http", "https", "mailto"].contains(scheme)
+    }
+}
+
+@MainActor
+enum CaretVisibilityController {
+    @discardableResult
+    static func revealCaret(in textView: NSTextView, margin: CGFloat = 8) -> Bool {
+        guard let scrollView = textView.enclosingScrollView,
+              let documentView = scrollView.documentView,
+              let caretRect = caretLineRect(in: textView)
+        else { return false }
+
+        let clipView = scrollView.contentView
+        let caretInDocument = textView.convert(caretRect, to: documentView)
+        let visibleTop = clipView.bounds.minY + scrollView.contentInsets.top
+        let visibleBottom = clipView.bounds.maxY - scrollView.contentInsets.bottom
+        let targetY: CGFloat
+
+        if caretInDocument.minY < visibleTop {
+            targetY = caretInDocument.minY - scrollView.contentInsets.top - margin
+        } else if caretInDocument.maxY > visibleBottom {
+            targetY = caretInDocument.maxY
+                - clipView.bounds.height
+                + scrollView.contentInsets.bottom
+                + margin
+        } else {
+            return false
+        }
+
+        let proposedBounds = CGRect(
+            x: clipView.bounds.minX,
+            y: targetY,
+            width: clipView.bounds.width,
+            height: clipView.bounds.height
+        )
+        let constrainedOrigin = clipView.constrainBoundsRect(proposedBounds).origin
+        guard abs(constrainedOrigin.y - clipView.bounds.origin.y) > 0.5 else {
+            return false
+        }
+        clipView.scroll(to: constrainedOrigin)
+        scrollView.reflectScrolledClipView(clipView)
+        return true
+    }
+
+    static func isCaretVisible(in textView: NSTextView) -> Bool {
+        guard let scrollView = textView.enclosingScrollView,
+              let documentView = scrollView.documentView,
+              let caretRect = caretLineRect(in: textView)
+        else { return false }
+        let caretInDocument = textView.convert(caretRect, to: documentView)
+        let visible = scrollView.contentView.bounds
+        return caretInDocument.minY >= visible.minY - 0.5
+            && caretInDocument.maxY <= visible.maxY + 0.5
+    }
+
+    private static func caretLineRect(in textView: NSTextView) -> CGRect? {
+        guard let layoutManager = textView.textLayoutManager,
+              let contentManager = layoutManager.textContentManager
+        else { return nil }
+
+        let textLength = (textView.string as NSString).length
+        let caretOffset = min(textView.selectedRange().location, textLength)
+        let fallbackOffset = min(caretOffset, max(0, textLength - 1))
+        var offsets = [caretOffset]
+        if fallbackOffset != caretOffset { offsets.append(fallbackOffset) }
+
+        for offset in offsets {
+            guard let location = contentManager.location(
+                layoutManager.documentRange.location,
+                offsetBy: offset
+            ) else { continue }
+
+            var fragmentRect: CGRect?
+            layoutManager.enumerateTextLayoutFragments(
+                from: location,
+                options: [.ensuresLayout]
+            ) { fragment in
+                fragmentRect = fragment.layoutFragmentFrame
+                return false
+            }
+
+            var segmentRect: CGRect?
+            layoutManager.enumerateTextSegments(
+                in: NSTextRange(location: location),
+                type: .standard,
+                options: []
+            ) { _, frame, _, _ in
+                if frame.height > 0 { segmentRect = frame }
+                return false
+            }
+            if let segmentRect { return segmentRect }
+            if let fragmentRect { return fragmentRect }
+        }
+        return nil
+    }
+}
+
+private struct CaretVisibilityObserver: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> HierarchyProbeView {
+        let view = HierarchyProbeView()
+        view.onHierarchyChange = { [weak view, weak coordinator = context.coordinator] in
+            guard let view else { return }
+            coordinator?.attachWhenReady(from: view)
+        }
+        context.coordinator.attachWhenReady(from: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: HierarchyProbeView, context: Context) {
+        context.coordinator.attachWhenReady(from: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: HierarchyProbeView, coordinator: Coordinator) {
+        nsView.onHierarchyChange = nil
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator {
+        private weak var trackedTextView: NSTextView?
+        private var observers: [NSObjectProtocol] = []
+        private var attachmentGeneration = 0
+        private var revealGeneration = 0
+
+        func attachWhenReady(from probe: NSView, remainingAttempts: Int = 20) {
+            attachmentGeneration += 1
+            let generation = attachmentGeneration
+            attach(from: probe)
+            guard trackedTextView == nil, remainingAttempts > 1 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak probe] in
+                guard let self,
+                      let probe,
+                      self.attachmentGeneration == generation
+                else { return }
+                self.attachWhenReady(
+                    from: probe,
+                    remainingAttempts: remainingAttempts - 1
+                )
+            }
+        }
+
+        func detach() {
+            attachmentGeneration += 1
+            revealGeneration += 1
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
+            trackedTextView = nil
+        }
+
+        private func attach(from probe: NSView) {
+            guard let root = probe.window?.contentView,
+                  let textView = findEditorTextView(in: root),
+                  trackedTextView !== textView
+            else { return }
+
+            detach()
+            trackedTextView = textView
+            let center = NotificationCenter.default
+            observers.append(
+                center.addObserver(
+                    forName: NSText.didChangeNotification,
+                    object: textView,
+                    queue: .main
+                ) { [weak self, weak textView] _ in
+                    Task { @MainActor [weak self, weak textView] in
+                        guard let textView else { return }
+                        self?.scheduleReveal(for: textView)
+                    }
+                }
+            )
+            observers.append(
+                center.addObserver(
+                    forName: NSTextView.didChangeSelectionNotification,
+                    object: textView,
+                    queue: .main
+                ) { [weak self, weak textView] _ in
+                    Task { @MainActor [weak self, weak textView] in
+                        guard let textView else { return }
+                        self?.scheduleReveal(for: textView)
+                    }
+                }
+            )
+            scheduleReveal(for: textView)
+        }
+
+        private func scheduleReveal(for textView: NSTextView) {
+            guard textView.window?.firstResponder === textView else { return }
+            revealGeneration += 1
+            let generation = revealGeneration
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self,
+                      let textView,
+                      self.revealGeneration == generation,
+                      textView.window?.firstResponder === textView
+                else { return }
+                CaretVisibilityController.revealCaret(in: textView)
+                DispatchQueue.main.async { [weak self, weak textView] in
+                    guard let self,
+                          let textView,
+                          self.revealGeneration == generation,
+                          textView.window?.firstResponder === textView
+                    else { return }
+                    CaretVisibilityController.revealCaret(in: textView)
+                }
+            }
+        }
+
+        private func findEditorTextView(in view: NSView) -> NSTextView? {
+            if let textView = view as? NSTextView,
+               textView.delegate is NativeTextViewCoordinator {
+                return textView
+            }
+            for subview in view.subviews {
+                if let textView = findEditorTextView(in: subview) { return textView }
+            }
+            return nil
+        }
+    }
+}
+
+private final class HierarchyProbeView: NSView {
+    var onHierarchyChange: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onHierarchyChange?()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        onHierarchyChange?()
     }
 }
 

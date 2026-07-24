@@ -159,7 +159,7 @@ final class EdgeWorkspaceController: ObservableObject {
         draftNotes[draft.id] = draft
         reloadNotes()
         refreshLayout()
-        open(noteID: draft.id, on: side, focusEditor: true)
+        open(noteID: draft.id, on: side, focusTarget: .title)
     }
 
     func createAdjacentMemo(to sourceNoteID: UUID, direction: MemoAdjacentDirection) {
@@ -220,7 +220,7 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: lane.edge,
-            focusEditor: true,
+            initialFocus: .title,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: draft.id, title: title)
             }
@@ -236,12 +236,12 @@ final class EdgeWorkspaceController: ObservableObject {
         if presentationState.isIce(noteID) {
             closeHorizontalLane(containing: noteID)
         } else {
-            open(noteID: noteID, on: edge ?? launcherEdge, focusEditor: true)
+            open(noteID: noteID, on: edge ?? launcherEdge, focusTarget: .editor)
         }
     }
 
     func handleDoubleClick(noteID: UUID, on edge: EdgeDock? = nil) {
-        open(noteID: noteID, on: edge ?? launcherEdge, focusEditor: true)
+        open(noteID: noteID, on: edge ?? launcherEdge, focusTarget: .editor)
     }
 
     func toggleRecent() {
@@ -250,7 +250,7 @@ final class EdgeWorkspaceController: ObservableObject {
             return
         }
         let candidate = preferences.lastNoteID.flatMap(note(withID:)) ?? orderedNotes.first
-        if let candidate { open(noteID: candidate.id, on: preferences.defaultEdge, focusEditor: true) }
+        if let candidate { open(noteID: candidate.id, on: preferences.defaultEdge, focusTarget: .editor) }
     }
 
     func toggleMode() {
@@ -368,14 +368,14 @@ final class EdgeWorkspaceController: ObservableObject {
         let currentIndex = presentationState.currentNoteID.flatMap { id in ordered.firstIndex { $0.id == id } } ?? 0
         let next = (currentIndex + direction + ordered.count) % ordered.count
         let side = presentationState.currentNoteID.flatMap { iceEdges[$0] } ?? preferences.defaultEdge
-        open(noteID: ordered[next].id, on: side, focusEditor: true)
+        open(noteID: ordered[next].id, on: side, focusTarget: .editor)
     }
 
     func selectNote(at index: Int) {
         let ordered = orderedNotes
         guard ordered.indices.contains(index) else { return }
         let side = presentationState.currentNoteID.flatMap { iceEdges[$0] } ?? preferences.defaultEdge
-        open(noteID: ordered[index].id, on: side, focusEditor: true)
+        open(noteID: ordered[index].id, on: side, focusTarget: .editor)
     }
 
     func delete(noteID: UUID) {
@@ -476,7 +476,7 @@ final class EdgeWorkspaceController: ObservableObject {
     private func open(
         noteID: UUID,
         on requestedEdge: EdgeDock? = nil,
-        focusEditor: Bool = false
+        focusTarget: MemoPanelFocusTarget = .none
     ) {
         guard let note = note(withID: noteID) else { return }
         if presentationState.isIce(noteID) {
@@ -534,6 +534,7 @@ final class EdgeWorkspaceController: ObservableObject {
         refreshLayoutSnapshot()
         let panelFrame = panelFrame(for: note, handleFrame: handleFrame, edge: edge, screen: screen)
         preferences.lastNoteID = noteID
+        promoteToIndexBottom(noteID: noteID)
         panelController(for: noteID).show(
             note: note,
             frame: panelFrame,
@@ -541,7 +542,7 @@ final class EdgeWorkspaceController: ObservableObject {
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
             edge: edge,
-            focusEditor: focusEditor,
+            initialFocus: focusTarget,
             onTitleChange: { [weak self] title in
                 self?.handlePanelTitleChange(noteID: noteID, title: title)
             }
@@ -608,6 +609,9 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         controller.onDidBecomeKey = { [weak self] requestedNoteID in
             self?.handlePanelFocus(noteID: requestedNoteID)
+        }
+        controller.shouldAcceptAutomaticFocus = { [weak self] in
+            self?.presentationState.focusedIceNoteID == noteID
         }
         panelControllers[noteID] = controller
         return controller
@@ -797,6 +801,7 @@ final class EdgeWorkspaceController: ObservableObject {
             action: .focus(noteID)
         )
         preferences.lastNoteID = noteID
+        promoteToIndexBottom(noteID: noteID)
     }
 
     private func handleContentChange(noteID: UUID, content: String) {
@@ -821,6 +826,7 @@ final class EdgeWorkspaceController: ObservableObject {
 
         guard store.note(withID: noteID) != nil else { return }
         if MemoNote.hasMeaningfulContent(content) {
+            promoteToIndexBottom(noteID: noteID)
             pendingEmptyNoteIDs.remove(noteID)
             store.updateContent(noteID: noteID, content: content)
             if let error = store.lastPersistenceError {
@@ -848,6 +854,7 @@ final class EdgeWorkspaceController: ObservableObject {
             draft.isTitleExplicit = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             draftNotes[noteID] = draft
         } else {
+            promoteToIndexBottom(noteID: noteID)
             store.updateTitle(noteID: noteID, title: title)
             if let error = store.lastPersistenceError { showPersistenceAlert(error) }
         }
@@ -855,6 +862,18 @@ final class EdgeWorkspaceController: ObservableObject {
         refreshLayoutSnapshot()
         refreshHandles()
         repositionOpenPanel(noteID: noteID)
+    }
+
+    private func promoteToIndexBottom(noteID: UUID) {
+        guard store.note(withID: noteID) != nil else { return }
+        let orderedIDs = orderedNotes.map(\.id)
+        guard orderedIDs.last != noteID else { return }
+        let updatedOrder = orderedIDs.filter { $0 != noteID } + [noteID]
+        guard store.setGlobalIndexOrder(updatedOrder) else {
+            if let error = store.lastPersistenceError { showPersistenceAlert(error) }
+            return
+        }
+        reloadNotes()
     }
 
     private func handlePanelResize(noteID: UUID, size: CGSize) {
@@ -908,7 +927,7 @@ final class EdgeWorkspaceController: ObservableObject {
                 screenFrame: screen.frame,
                 visibleFrame: screen.visibleFrame,
                 edge: edge,
-                focusEditor: false,
+                initialFocus: .none,
                 onTitleChange: { [weak self] title in
                     self?.handlePanelTitleChange(noteID: noteID, title: title)
                 }
