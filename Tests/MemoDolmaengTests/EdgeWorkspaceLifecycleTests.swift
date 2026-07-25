@@ -4,6 +4,25 @@ import XCTest
 
 @MainActor
 final class EdgeWorkspaceLifecycleTests: XCTestCase {
+    func testIndexControlHideKeepsWindowVisibleUntilMotionCompletes() async throws {
+        let controller = EdgeControlPanelController(
+            edge: .left,
+            onCreate: {},
+            onPointerChange: { _ in }
+        )
+        controller.update(frame: CGRect(x: 0, y: 300, width: 34, height: 34))
+        controller.show(animated: false)
+        let window = try XCTUnwrap(controller.window)
+
+        controller.hide(animated: true)
+
+        XCTAssertTrue(window.isVisible)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(window.isVisible)
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertFalse(window.isVisible)
+    }
+
     func testFourthIceOnSameEdgeFoldsOldestAndKeepsNewestOnTop() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MemoDolmaengWorkspaceTests-\(UUID().uuidString)", isDirectory: true)

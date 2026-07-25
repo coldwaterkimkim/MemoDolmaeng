@@ -53,6 +53,23 @@ enum EdgeHotZoneToggleResolver {
     }
 }
 
+enum EdgeIndexAutoHidePolicy {
+    static let delay: Duration = .seconds(3)
+
+    static func shouldHide(
+        scheduledZone: EdgeHotZoneID,
+        visibleZone: EdgeHotZoneID?,
+        visibility: EdgeIndexVisibilityState,
+        isDragging: Bool
+    ) -> Bool {
+        guard !isDragging,
+              visibleZone == scheduledZone,
+              case let .visible(edge) = visibility
+        else { return false }
+        return edge == scheduledZone.interactiveSide
+    }
+}
+
 enum MemoAdjacentDirection: Hashable {
     case left
     case right

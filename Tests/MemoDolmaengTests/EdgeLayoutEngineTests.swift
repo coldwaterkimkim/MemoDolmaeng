@@ -715,6 +715,50 @@ final class EdgePresentationReducerTests: XCTestCase {
         )
     }
 
+    func testIndexAutoHideUsesThreeSecondFixedLifetime() {
+        XCTAssertEqual(EdgeIndexAutoHidePolicy.delay, .seconds(3))
+
+        let left = EdgeHotZoneID(screenIdentifier: "main", displayID: 1, edge: .left)
+        XCTAssertTrue(
+            EdgeIndexAutoHidePolicy.shouldHide(
+                scheduledZone: left,
+                visibleZone: left,
+                visibility: .visible(.left),
+                isDragging: false
+            )
+        )
+    }
+
+    func testIndexAutoHideIgnoresStaleMovedOrDraggingTray() {
+        let left = EdgeHotZoneID(screenIdentifier: "main", displayID: 1, edge: .left)
+        let right = EdgeHotZoneID(screenIdentifier: "main", displayID: 1, edge: .right)
+
+        XCTAssertFalse(
+            EdgeIndexAutoHidePolicy.shouldHide(
+                scheduledZone: left,
+                visibleZone: right,
+                visibility: .visible(.right),
+                isDragging: false
+            )
+        )
+        XCTAssertFalse(
+            EdgeIndexAutoHidePolicy.shouldHide(
+                scheduledZone: left,
+                visibleZone: left,
+                visibility: .dragging(UUID()),
+                isDragging: true
+            )
+        )
+        XCTAssertFalse(
+            EdgeIndexAutoHidePolicy.shouldHide(
+                scheduledZone: left,
+                visibleZone: nil,
+                visibility: .hidden,
+                isDragging: false
+            )
+        )
+    }
+
     func testClickOpensAndClosesIce() {
         let id = UUID()
         let opened = EdgePresentationReducer.reduce(state: EdgePresentationState(), action: .click(id))

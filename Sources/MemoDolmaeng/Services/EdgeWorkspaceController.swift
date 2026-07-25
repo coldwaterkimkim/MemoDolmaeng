@@ -70,6 +70,7 @@ final class EdgeWorkspaceController: ObservableObject {
     private var launcherAnchorY: [EdgeDock: CGFloat] = [:]
     private var draftNotes: [UUID: MemoNote] = [:]
     private var draggingNoteID: UUID?
+    private var indexAutoHideTask: Task<Void, Never>?
     private var collapsingNoteIDs: Set<UUID> = []
     private var observers: [NSObjectProtocol] = []
 
@@ -125,6 +126,7 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     deinit {
+        indexAutoHideTask?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -193,6 +195,7 @@ final class EdgeWorkspaceController: ObservableObject {
             action: .open(draft.id)
         )
         preferences.lastNoteID = draft.id
+        cancelIndexAutoHide()
         indexVisibility = .hidden
         visibleHotZoneID = nil
         reloadNotes()
@@ -528,6 +531,7 @@ final class EdgeWorkspaceController: ObservableObject {
         )
         iceEdges[noteID] = edge
         launcherEdge = edge
+        cancelIndexAutoHide()
         indexVisibility = .hidden
         visibleHotZoneID = nil
         handleControllers[noteID]?.hide(animated: false)
@@ -1150,10 +1154,10 @@ final class EdgeWorkspaceController: ObservableObject {
                 visibleHotZoneID = target
                 indexVisibility = .visible(side)
                 refreshLayout()
+                scheduleIndexAutoHide(for: target)
             case .hide:
-                visibleHotZoneID = nil
-                indexVisibility = .hidden
-                applyIndexVisibility()
+                cancelIndexAutoHide()
+                hideIndexTray(animated: true)
             }
         } else {
             pointerInsideHotZones.remove(zoneID)
@@ -1163,12 +1167,12 @@ final class EdgeWorkspaceController: ObservableObject {
     private func handleHotZonesRemoved(_ zoneIDs: Set<EdgeHotZoneID>) {
         pointerInsideHotZones.subtract(zoneIDs)
         guard let visibleHotZoneID, zoneIDs.contains(visibleHotZoneID) else { return }
+        cancelIndexAutoHide()
         self.visibleHotZoneID = nil
         if interactionDisplayID == visibleHotZoneID.displayID {
             interactionDisplayID = nil
         }
-        indexVisibility = .hidden
-        applyIndexVisibility()
+        hideIndexTray(animated: true)
     }
 
     private func handleControlPointer(edge: EdgeDock, inside: Bool) {
@@ -1222,15 +1226,59 @@ final class EdgeWorkspaceController: ObservableObject {
     }
 
     private func hideTrayImmediately() {
+        hideIndexPanels(animated: false)
+    }
+
+    private func hideIndexTray(animated: Bool) {
+        visibleHotZoneID = nil
+        indexVisibility = .hidden
+        hideIndexPanels(animated: animated)
+    }
+
+    private func hideIndexPanels(animated: Bool) {
         for controller in handleControllers.values {
-            controller.hide(animated: false)
+            controller.hide(animated: animated)
         }
         for controller in controlControllers.values {
-            controller.hide(animated: false)
+            controller.hide(animated: animated)
         }
     }
 
+    private func scheduleIndexAutoHide(for zoneID: EdgeHotZoneID) {
+        cancelIndexAutoHide()
+        indexAutoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: EdgeIndexAutoHidePolicy.delay)
+            guard !Task.isCancelled,
+                  let self,
+                  EdgeIndexAutoHidePolicy.shouldHide(
+                    scheduledZone: zoneID,
+                    visibleZone: self.visibleHotZoneID,
+                    visibility: self.indexVisibility,
+                    isDragging: self.draggingNoteID != nil
+                  )
+            else { return }
+            self.indexAutoHideTask = nil
+            self.hideIndexTray(animated: true)
+        }
+    }
+
+    private func scheduleIndexAutoHideForCurrentTray() {
+        guard let visibleHotZoneID,
+              case .visible = indexVisibility
+        else {
+            cancelIndexAutoHide()
+            return
+        }
+        scheduleIndexAutoHide(for: visibleHotZoneID)
+    }
+
+    private func cancelIndexAutoHide() {
+        indexAutoHideTask?.cancel()
+        indexAutoHideTask = nil
+    }
+
     private func beginDrag(noteID: UUID) {
+        cancelIndexAutoHide()
         draggingNoteID = noteID
         indexVisibility = .dragging(noteID)
         let screen = targetScreen()
@@ -1266,6 +1314,7 @@ final class EdgeWorkspaceController: ObservableObject {
         }
         defer {
             endDragInteraction()
+            scheduleIndexAutoHideForCurrentTray()
         }
         guard note(withID: noteID) != nil else {
             indexVisibility = .hidden
@@ -1328,6 +1377,7 @@ final class EdgeWorkspaceController: ObservableObject {
         } else {
             refreshLayout()
         }
+        scheduleIndexAutoHideForCurrentTray()
     }
 
     private func importImage(noteID: UUID, data: Data, originalName: String) throws -> URL {
